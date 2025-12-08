@@ -9,7 +9,8 @@
   },
   "dependencies": {
     "openai": "^4.77.0",
-    "axios": "^1.7.9"
+    "axios": "^1.7.9",
+    "pdf-lib": "^1.17.1"
   },
   "engines": {
     "node": ">=18.0.0"
