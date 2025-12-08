@@ -11,16 +11,10 @@ const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
 
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
-// Helper: send text
 async function sendMessage(chatId, text, options = {}) {
-  await axios.post(`${TELEGRAM_API}/sendMessage`, {
-    chat_id: chatId,
-    text,
-    ...options
-  });
+  await axios.post(`${TELEGRAM_API}/sendMessage`, { chat_id: chatId, text, ...options });
 }
 
-// Helper: download voice
 async function downloadVoiceFile(fileId) {
   const fileResponse = await axios.get(`${TELEGRAM_API}/getFile?file_id=${fileId}`);
   const filePath = fileResponse.data.result.file_path;
@@ -30,20 +24,20 @@ async function downloadVoiceFile(fileId) {
 }
 
 module.exports = async (req, res) => {
-  if (req.method === "GET") return res.status(200).json({ status: "Bot is alive!" });
+  if (req.method === "GET") return res.status(200).json({ status: "Bot is running!" });
 
   try {
     const update = req.body;
 
     if (update.message?.text === "/start" || update.message?.text === "/help") {
-      await sendMessage(update.message.chat.id, `Welcome to Report Bot!
+      await sendMessage(update.message.chat.id, `Dorset House Report Bot
 
 Send a voice note like:
-"Harry Ramsden. English 5, Maths 7, PE 6. Lovely kid.
+"Harry Ramsden. English 5, Maths 7, PE 10. Brilliant term.
 NEXT STUDENT
 Lisa Simpson. English 9, Maths 9, PE 2. Hates rugby."
 
-You’ll get one beautiful PDF per student.`);
+You’ll receive beautiful letterheaded PDFs instantly.`);
       return res.status(200).send("ok");
     }
 
@@ -55,11 +49,11 @@ You’ll get one beautiful PDF per student.`);
     const chatId = update.message.chat.id;
     const fileId = update.message.voice.file_id;
 
-    await sendMessage(chatId, "Transcribing and generating PDFs...");
+    await sendMessage(chatId, "Transcribing and creating your reports...");
 
-    // 1. Transcribe
     const audioBuffer = await downloadVoiceFile(fileId);
     const audioFile = new File([audioBuffer], "voice.ogg", { type: "audio/ogg" });
+
     const transcription = await openai.audio.transcriptions.create({
       file: audioFile,
       model: "whisper-1",
@@ -71,19 +65,18 @@ You’ll get one beautiful PDF per student.`);
       .map(s => s.trim())
       .filter(s => s.length > 0);
 
-    await sendMessage(chatId, `Found ${segments.length} student(s). Creating PDFs...`);
+    await sendMessage(chatId, `Found ${segments.length} student(s). Generating letterheaded PDFs...`);
 
-    // 2. Process each student
     for (let i = 0; i < segments.length; i++) {
       const studentText = segments[i];
 
-      // Parse JSON
+      // Parse with GPT
       const parseResp = await openai.chat.completions.create({
         model: "gpt-4o-mini",
         temperature: 0,
         messages: [{ role: "user", content: `Return ONLY valid JSON:\n"${studentText}"\n\n{
   "student_name": "Full Name",
-  "scores": { "English": 5, "Maths": 7, "PE": 6, "Science": null },
+  "scores": { "English": 5, "Maths": 7, "PE": 10, "Science": null },
   "teacher_notes": "any notes"
 }`}]
       });
@@ -97,89 +90,103 @@ You’ll get one beautiful PDF per student.`);
         continue;
       }
 
-      // Generate report text
+      // Generate full report
       const reportResp = await openai.chat.completions.create({
         model: "gpt-4o-mini",
         temperature: 0.7,
-        messages: [{ role: "user", content: `Write a warm, professional 80–100 word British school report. Not too stuffy. for ${data.student_name}.
+        messages: [{ role: "user", content: `Write a warm, professional 80–100 word British school report. From young male teacher, not stuffy for ${data.student_name}.
 Scores:\n${Object.entries(data.scores).filter(([_,v])=>v!==null).map(([s,v])=>`- ${s}: ${v}/10`).join("\n") || "No scores"}
 Notes: "${data.teacher_notes || ""}"`}]
       });
       const reportText = reportResp.choices[0].message.content.trim();
 
-              // ——— EXACTLY YOUR SCHOOL LETTER FORMAT ———
-        const pdfDoc = await PDFDocument.create();
-        const page = pdfDoc.addPage([595, 842]); // A4
-        const { width, height } = page.getSize();
-        const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-        const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+      // PROFESSIONAL DORSET HOUSE PDF
+      const pdfDoc = await PDFDocument.create();
+      const page = pdfDoc.addPage([595, 842]);
+      const { width, height } = page.getSize();
+      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+      const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-        // School crest top-right
-        if (fs.existsSync("logo.jpg")) {
-          const logoBytes = fs.readFileSync("logo.jpg");
-          const logo = await pdfDoc.embedPng(logoBytes);
-          page.drawImage(logo, { x: width - 150, y: height - 130, width: 100, height: 100 });
-        }
-
-        // Letterhead
-        let y = height - 160;
-        page.drawText("Church Ln,", { x: 380, y: y, size: 11, font }); y -= 18;
-        page.drawText("Bury,", { x: 380, y, size: 11, font }); y -= 18;
-        page.drawText("Pulborough,", { x: 380, y, size: 11, font }); y -= 18;
-        page.drawText("RH20 1PB", { x: 380, y, size: 11, font, color: rgb(0,0.4,0.8) });
-
-        y -= 50;
-        page.drawText("Dear Parent,", { x: 50, y, size: 12, font });
-
-        y -= 40;
-        page.drawText("some pre-amble", { x: 50, y, size: 11, font });
-
-        // Table
-        y -= 40;
-        const drawLine = (yPos) => page.drawLine({ start: { x: 50, y: yPos }, end: { x: 545, y: yPos }, thickness: 1, color: rgb(0,0,0) });
-
-        drawLine(y); // top
-        page.drawText("Subject", { x: 60, y: y - 20, size: 12, font: bold });
-        page.drawText("score", { x: 260, y: y - 20, size: 12, font: bold });
-        page.drawText("Comments", { x: 360, y: y - 20, size: 12, font: bold });
-        drawLine(y - 30);
-
-        y -= 60;
-        for (const [subject, level] of Object.entries(data.scores)) {
-          if (level === null) continue;
-          page.drawText(subject, { x: 60, y, size: 11, font });
-          page.drawText(level.toString(), { x: 270, y, size: 11, font });
-          y -= 30;
-        }
-        drawLine(y + 30); // bottom
-
-        // Longer comments
-        y -= 50;
-        page.drawText("Longer comments", { x: 50, y, size: 12, font: bold });
-        y -= 30;
-        const commentLines = reportText.match(/.{1,90}(\s|$)/g) || [];
-        commentLines.forEach(line => {
-          page.drawText(line.trim(), { x: 50, y, size: 11, font });
-          y -= 20;
+      // LOGO top-right (supports logo.jpg or logo.png)
+      if (fs.existsSync("logo.jpg") || fs.existsSync("logo.png")) {
+        const logoPath = fs.existsSync("logo.jpg") ? "logo.jpg" : "logo.png";
+        const logoBytes = fs.readFileSync(logoPath);
+        const logoImage = logoPath.endsWith('.jpg')
+          ? await pdfDoc.embedJpg(logoBytes)
+          : await pdfDoc.embedPng(logoBytes);
+        const logoDims = logoImage.scale(0.4);
+        page.drawImage(logoImage, {
+          x: width - 180,
+          y: height - 140,
+          width: logoDims.width,
+          height: logoDims.height,
         });
+      }
 
-        // Save & send (same as before)
-        const pdfBytes = await pdfDoc.save();
-        const safeName = data.student_name.replace(/[^a-zA-Z0-9]/g, "_");
-        const filename = `${safeName}_report.pdf`;
-        const tmpPath = `/tmp/${filename}`;
-        fs.writeFileSync(tmpPath, pdfBytes);
+      // Address block under logo
+      let y = height - 100;
+      page.drawText("Church Ln,", { x: width - 200, y: y -= 20, size: 11, font });
+      page.drawText("Bury,", { x: width - 200, y: y -= 20, size: 11, font });
+      page.drawText("Pulborough,", { x: width - 200, y: y -= 20, size: 11, font });
+      page.drawText("RH20 1PB", { x: width - 200, y: y -= 25, size: 11, font, color: rgb(0, 0.3, 0.6) });
 
-        const form = new FormData();
-        form.append('chat_id', chatId);
-        form.append('document', fs.createReadStream(tmpPath), { filename });
-        form.append('caption', `Report for ${data.student_name}`);
+      // Dear Parent section
+      page.drawText("Dear Parent,", { x: 70, y: height - 180, size: 12, font: bold });
+      page.drawText("Please find below the latest report for your child.", { x: 70, y: height - 220, size: 11, font });
+      page.drawText("We are very proud of their progress this term.", { x: 70, y: height - 245, size: 11, font });
 
-        await axios.post(`${TELEGRAM_API}/sendDocument`, form, { headers: form.getHeaders() });
-        fs.unlinkSync(tmpPath);
+      // Professional table
+      const left = 70;
+      const col1 = 70;
+      const col2 = 280;
+      const col3 = 380;
+      const tableTop = height - 320;
+
+      page.drawRectangle({ x: left, y: tableTop + 5, width: 455, height: 30, color: rgb(0.05, 0.25, 0.5) });
+      page.drawText("Subject",   { x: col1 + 10, y: tableTop + 12, size: 12, font: bold, color: rgb(1,1,1) });
+      page.drawText("score",     { x: col2 + 15, y: tableTop + 12, size: 12, font: bold, color: rgb(1,1,1) });
+      page.drawText("Comments",  { x: col3 + 10, y: tableTop + 12, size: 12, font: bold, color: rgb(1,1,1) });
+
+      page.drawLine({ start: {x: left, y: tableTop + 35}, end: {x: left + 455, y: tableTop + 35}, thickness: 1.5 });
+      page.drawLine({ start: {x: left, y: tableTop}, end: {x: left + 455, y: tableTop}, thickness: 1.5 });
+
+      [col2, col3].forEach(col => {
+        page.drawLine({ start: {x: col, y: tableTop + 35}, end: {x: col, y: tableTop - 200}, thickness: 0.5, color: rgb(0.7,0.7,0.7) });
+      });
+
+      y = tableTop - 30;
+      for (const [subject, level] of Object.entries(data.scores)) {
+        if (level === null) continue;
+        page.drawText(subject, { x: col1 + 10, y: y -= 35, size: 11, font });
+        page.drawText(level.toString(), { x: col2 + 20, y: y + 35, size: 11, font });
+        page.drawLine({ start: {x: left, y: y + 15}, end: {x: left + 455, y: y + 15}, thickness: 0.5, color: rgb(0.85,0.85,0.85) });
+      }
+
+      // Longer comments
+      y -= 60;
+      page.drawText("Longer comments", { x: 70, y: y -= 10, size: 13, font: bold });
+      const lines = reportText.match(/.{1,92}(\s|$)/g) || [reportText];
+      lines.forEach(line => {
+        page.drawText(line.trim(), { x: 70, y: y -= 22, size: 11, font });
+      });
+
+      // SEND PDF
+      const pdfBytes = await pdfDoc.save();
+      const safeName = data.student_name.replace(/[^a-zA-Z0-9]/g, "_");
+      const filename = `${safeName}_report.pdf`;
+      const tmpPath = `/tmp/${filename}`;
+      fs.writeFileSync(tmpPath, pdfBytes);
+
+      const form = new FormData();
+      form.append('chat_id', chatId);
+      form.append('document', fs.createReadStream(tmpPath), { filename });
+      form.append('caption', `Report for ${data.student_name}`);
+
+      await axios.post(`${TELEGRAM_API}/sendDocument`, form, { headers: form.getHeaders() });
+      fs.unlinkSync(tmpPath);
     }
 
-    await sendMessage(chatId, "All PDFs sent successfully!");
+    await sendMessage(chatId, "All reports sent as beautiful PDFs!");
 
   } catch (err) {
     console.error(err);
