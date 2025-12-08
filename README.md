@@ -2,7 +2,7 @@
 
 ## 🚀 Deploy to Vercel (10 minutes total)
 
-### Step 1: Create Your Telegram Bot (2 mins)
+### Step 1: Create Your Telegram Bot (5 mins)
 
 1. Open Telegram on your iPhone
 2. Search for `@BotFather`
