@@ -161,7 +161,7 @@ Return ONLY valid JSON:
             messages: [
               {
                 role: "user",
-                content: `Write a 120-150 word British end-of-term report.
+                content: `Write a 50-80 word British end-of-term report.
 
 Student: ${parsedData.student_name}
 Scores:
