@@ -153,7 +153,7 @@ ${Object.entries(parsedData.scores).map(([subject, score]) => `- ${subject}: ${s
 
 Teacher's notes: "${parsedData.teacher_notes}"
 
-Write a 120-150 word report in a warm but professional tone. Use British English.
+Write a 80-100 word report in a warm but professional tone. Use British English.
 Structure: Opening sentence about overall performance → specific subject strengths → areas for development → encouraging close.
 Be specific but kind. Refer to the student by name.`
           }],
