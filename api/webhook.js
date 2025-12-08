@@ -8,13 +8,18 @@ const FormData = require('form-data');
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
-
-// EMBED YOUR LOGO HERE (convert logo.jpg to base64 at https://base64.guru/converter/encode/image)
-// For now, this will skip the logo if empty - REPLACE THIS with your actual base64 string
-const LOGO_BASE64 = process.env.LOGO_BASE64 || ""; 
-// Format should be: "data:image/png;base64,iVBORw0KGgo..." (include the data:image/png;base64, prefix)
+const LOGO_BASE64 = process.env.LOGO_BASE64 || "";
 
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
+
+function sanitizeText(text) {
+  return text
+    .replace(/['']/g, "'")
+    .replace(/[""]/g, '"')
+    .replace(/[—–]/g, "-")
+    .replace(/…/g, "...")
+    .replace(/[^\x00-\x7F]/g, "");
+}
 
 async function sendMessage(chatId, text, options = {}) {
   await axios.post(`${TELEGRAM_API}/sendMessage`, { chat_id: chatId, text, ...options });
@@ -103,7 +108,6 @@ You'll receive professional letterheaded PDFs instantly.`);
     for (let i = 0; i < segments.length; i++) {
       const studentText = segments[i];
 
-      // IMPROVED PARSING PROMPT - extracts structured data
       const parseResp = await openai.chat.completions.create({
         model: "gpt-4o-mini",
         temperature: 0,
@@ -141,7 +145,6 @@ If a subject isn't mentioned, set it to null. Include ALL subjects that were men
         continue;
       }
 
-      // GENERATE SUBJECT-SPECIFIC SHORT COMMENTS for table
       const subjectCommentsResp = await openai.chat.completions.create({
         model: "gpt-4o-mini",
         temperature: 0.7,
@@ -170,7 +173,6 @@ Only include subjects with scores. Keep it brief, positive, honest. Don't be stu
         subjectComments = JSON.parse(json);
       } catch (e) {
         console.error("Subject comments parse error", e);
-        // Fallback to generic comments
         Object.keys(data.scores).forEach(subject => {
           if (data.scores[subject] !== null) {
             subjectComments[subject] = data.scores[subject] >= 7 ? "Good progress" : "Working hard";
@@ -178,9 +180,8 @@ Only include subjects with scores. Keep it brief, positive, honest. Don't be stu
         });
       }
 
-      // GENERATE FULL REPORT - YOUNG PROFESSIONAL VOICE
       const reportResp = await openai.chat.completions.create({
-        model: "gpt-4o",
+        model: "gpt-4o-mini",
         temperature: 0.8,
         messages: [{ 
           role: "user", 
@@ -201,20 +202,19 @@ Key rules:
 - End with encouragement and maybe one thing to work on
 - Sound like a human, not a BBC newsreader
 - No bullet points, just flowing paragraphs
+- IMPORTANT: Use only simple ASCII characters - no smart quotes, em-dashes, or special symbols
 
 Write the report now:`
         }]
       });
-      const reportText = reportResp.choices[0].message.content.trim();
+      const reportText = sanitizeText(reportResp.choices[0].message.content.trim());
 
-      // BUILD PROFESSIONAL PDF
       const pdfDoc = await PDFDocument.create();
       const page = pdfDoc.addPage([595, 842]);
       const { width, height } = page.getSize();
       const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
       const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-      // EMBED LOGO (if provided)
       if (LOGO_BASE64 && LOGO_BASE64.length > 100) {
         try {
           const base64Data = LOGO_BASE64.includes('base64,') 
@@ -235,56 +235,49 @@ Write the report now:`
           });
         } catch (logoErr) {
           console.error("Logo embed failed:", logoErr);
-          // Continue without logo
         }
       }
 
-      // Address block
       let y = height - 100;
-      page.drawText("Church Ln,", { x: width - 190, y: y -= 18, size: 10, font });
-      page.drawText("Bury,", { x: width - 190, y: y -= 16, size: 10, font });
-      page.drawText("Pulborough,", { x: width - 190, y: y -= 16, size: 10, font });
-      page.drawText("RH20 1PB", { x: width - 190, y: y -= 20, size: 10, font, color: rgb(0, 0.3, 0.6) });
+      page.drawText(sanitizeText("Church Ln,"), { x: width - 190, y: y -= 18, size: 10, font });
+      page.drawText(sanitizeText("Bury,"), { x: width - 190, y: y -= 16, size: 10, font });
+      page.drawText(sanitizeText("Pulborough,"), { x: width - 190, y: y -= 16, size: 10, font });
+      page.drawText(sanitizeText("RH20 1PB"), { x: width - 190, y: y -= 20, size: 10, font, color: rgb(0, 0.3, 0.6) });
 
-      // Header
-      page.drawText("Dear Parent,", { x: 70, y: height - 180, size: 12, font: bold });
-      page.drawText(`Please find below ${data.student_name}'s latest report.`, { 
+      page.drawText(sanitizeText("Dear Parent,"), { x: 70, y: height - 180, size: 12, font: bold });
+      page.drawText(sanitizeText(`Please find below ${data.student_name}'s latest report.`), { 
         x: 70, y: height - 210, size: 11, font 
       });
-      page.drawText("We're really pleased with their progress this term.", { 
+      page.drawText(sanitizeText("We're really pleased with their progress this term."), { 
         x: 70, y: height - 230, size: 11, font 
       });
 
-      // Professional table with POPULATED comments column
       const left = 70;
-      const col1 = 70;    // Subject
-      const col2 = 230;   // Score
-      const col3 = 310;   // Comments
+      const col1 = 70;
+      const col2 = 230;
+      const col3 = 310;
       const tableTop = height - 300;
 
-      // Header row
       page.drawRectangle({ 
         x: left, y: tableTop + 5, width: 455, height: 28, 
         color: rgb(0.05, 0.25, 0.5) 
       });
-      page.drawText("Subject", { 
+      page.drawText(sanitizeText("Subject"), { 
         x: col1 + 10, y: tableTop + 13, size: 11, font: bold, color: rgb(1,1,1) 
       });
-      page.drawText("Score", { 
+      page.drawText(sanitizeText("Score"), { 
         x: col2 + 10, y: tableTop + 13, size: 11, font: bold, color: rgb(1,1,1) 
       });
-      page.drawText("Comments", { 
+      page.drawText(sanitizeText("Comments"), { 
         x: col3 + 10, y: tableTop + 13, size: 11, font: bold, color: rgb(1,1,1) 
       });
 
-      // Header border
       page.drawLine({ 
         start: {x: left, y: tableTop + 33}, 
         end: {x: left + 455, y: tableTop + 33}, 
         thickness: 1.5 
       });
 
-      // Vertical dividers
       [col2, col3].forEach(col => {
         page.drawLine({ 
           start: {x: col, y: tableTop + 33}, 
@@ -294,29 +287,24 @@ Write the report now:`
         });
       });
 
-      // Table rows with data
       y = tableTop - 8;
       const subjects = Object.entries(data.scores).filter(([_, score]) => score !== null);
       
       subjects.forEach(([subject, score], idx) => {
-        // Subject name
-        page.drawText(subject, { 
+        page.drawText(sanitizeText(subject), { 
           x: col1 + 10, y: y, size: 10, font 
         });
         
-        // Score
-        page.drawText(score.toString(), { 
+        page.drawText(sanitizeText(score.toString()), { 
           x: col2 + 15, y: y, size: 10, font 
         });
         
-        // SHORT COMMENT (this was missing!)
         const comment = subjectComments[subject] || "Progressing well";
-        page.drawText(comment, { 
+        page.drawText(sanitizeText(comment), { 
           x: col3 + 10, y: y, size: 9, font,
           maxWidth: 200
         });
 
-        // Row divider
         if (idx < subjects.length - 1) {
           page.drawLine({ 
             start: {x: left, y: y - 10}, 
@@ -329,37 +317,33 @@ Write the report now:`
         y -= 35;
       });
 
-      // Bottom table border
       page.drawLine({ 
         start: {x: left, y: tableTop - 200}, 
         end: {x: left + 455, y: tableTop - 200}, 
         thickness: 1.5 
       });
 
-      // Full report section
       y = tableTop - 240;
-      page.drawText("Detailed Comments", { 
+      page.drawText(sanitizeText("Detailed Comments"), { 
         x: 70, y: y, size: 12, font: bold 
       });
       
       y -= 25;
       const reportLines = wrapText(reportText, 450, font, 10.5);
       reportLines.forEach(line => {
-        page.drawText(line, { 
+        page.drawText(sanitizeText(line), { 
           x: 70, y: y, size: 10.5, font, lineHeight: 16 
         });
         y -= 18;
       });
 
-      // Footer
       y -= 40;
       if (y > 80) {
-        page.drawText("Please don't hesitate to get in touch if you'd like to discuss anything.", {
+        page.drawText(sanitizeText("Please don't hesitate to get in touch if you'd like to discuss anything."), {
           x: 70, y: y, size: 9, font, color: rgb(0.4, 0.4, 0.4)
         });
       }
 
-      // SEND PDF
       const pdfBytes = await pdfDoc.save();
       const safeName = data.student_name.replace(/[^a-zA-Z0-9]/g, "_");
       const filename = `${safeName}_Report.pdf`;
