@@ -1,18 +1,6 @@
 const OpenAI = require('openai');
 const axios = require('axios');
-// Switch from pdf-lib to docx to generate high-quality DOCX reports instead of PDFs
-const {
-  Document,
-  Paragraph,
-  TextRun,
-  Table,
-  TableRow,
-  TableCell,
-  Packer,
-  WidthType,
-  AlignmentType,
-  ImageRun,
-} = require('docx');
+const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
 const fs = require('fs');
 const path = require('path');
 const FormData = require('form-data');
@@ -49,7 +37,7 @@ Send a voice note like:
 NEXT STUDENT
 Lisa Simpson. English 9, Maths 9, PE 2. Hates rugby."
 
-You’ll receive beautiful letterheaded DOCX reports instantly.`);
+You’ll receive beautiful letterheaded PDFs instantly.`);
       return res.status(200).send("ok");
     }
 
@@ -77,8 +65,7 @@ You’ll receive beautiful letterheaded DOCX reports instantly.`);
       .map(s => s.trim())
       .filter(s => s.length > 0);
 
-    // Inform the user that DOCX reports are being created instead of PDFs
-    await sendMessage(chatId, `Found ${segments.length} student(s). Generating letterheaded DOCX reports...`);
+    await sendMessage(chatId, `Found ${segments.length} student(s). Generating letterheaded PDFs...`);
 
     for (let i = 0; i < segments.length; i++) {
       const studentText = segments[i];
@@ -113,161 +100,93 @@ Notes: "${data.teacher_notes || ""}"`}]
       });
       const reportText = reportResp.choices[0].message.content.trim();
 
-      // PROFESSIONAL DORSET HOUSE DOCX
-      // Create a DOCX document for each student with logo and address in the top-right
-      const doc = new Document();
-      // Determine logo path and read bytes
-      let logoBytes;
-      let logoPath;
+      // PROFESSIONAL DORSET HOUSE PDF
+      const pdfDoc = await PDFDocument.create();
+      const page = pdfDoc.addPage([595, 842]);
+      const { width, height } = page.getSize();
+      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+      const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+
+      // LOGO top-right (supports logo.jpg or logo.png)
       if (fs.existsSync("logo.jpg") || fs.existsSync("logo.png")) {
-        logoPath = fs.existsSync("logo.jpg") ? "logo.jpg" : "logo.png";
-        logoBytes = fs.readFileSync(logoPath);
+        const logoPath = fs.existsSync("logo.jpg") ? "logo.jpg" : "logo.png";
+        const logoBytes = fs.readFileSync(logoPath);
+        const logoImage = logoPath.endsWith('.jpg')
+          ? await pdfDoc.embedJpg(logoBytes)
+          : await pdfDoc.embedPng(logoBytes);
+        const logoDims = logoImage.scale(0.4);
+        page.drawImage(logoImage, {
+          x: width - 180,
+          y: height - 140,
+          width: logoDims.width,
+          height: logoDims.height,
+        });
       }
-      // Build header table: blank left cell and right cell with logo and address
-      const headerRow = new TableRow({
-        children: [
-          new TableCell({
-            children: [new Paragraph("")],
-            width: { size: 65, type: WidthType.PERCENTAGE },
-            borders: { top: { style: 'none' }, bottom: { style: 'none' }, left: { style: 'none' }, right: { style: 'none' } },
-          }),
-          new TableCell({
-            children: (
-              logoBytes
-                ? [
-                    new Paragraph({
-                      children: [
-                        new ImageRun({
-                          data: logoBytes,
-                          transformation: { width: 90, height: 120 },
-                        }),
-                      ],
-                      alignment: AlignmentType.RIGHT,
-                    }),
-                    new Paragraph({ text: "Church Ln", alignment: AlignmentType.RIGHT }),
-                    new Paragraph({ text: "Bury", alignment: AlignmentType.RIGHT }),
-                    new Paragraph({ text: "Pulborough", alignment: AlignmentType.RIGHT }),
-                    new Paragraph({
-                      children: [new TextRun({ text: "RH20 1PB", bold: true, color: "004C99" })],
-                      alignment: AlignmentType.RIGHT,
-                    }),
-                  ]
-                : [
-                    new Paragraph({ text: "Church Ln", alignment: AlignmentType.RIGHT }),
-                    new Paragraph({ text: "Bury", alignment: AlignmentType.RIGHT }),
-                    new Paragraph({ text: "Pulborough", alignment: AlignmentType.RIGHT }),
-                    new Paragraph({
-                      children: [new TextRun({ text: "RH20 1PB", bold: true, color: "004C99" })],
-                      alignment: AlignmentType.RIGHT,
-                    }),
-                  ]
-            ),
-            width: { size: 35, type: WidthType.PERCENTAGE },
-            borders: { top: { style: 'none' }, bottom: { style: 'none' }, left: { style: 'none' }, right: { style: 'none' } },
-          }),
-        ],
-      });
-      const headerTable = new Table({
-        rows: [headerRow],
-        width: { size: 100, type: WidthType.PERCENTAGE },
+
+      // Address block under logo
+      let y = height - 100;
+      page.drawText("Church Ln,", { x: width - 200, y: y -= 20, size: 11, font });
+      page.drawText("Bury,", { x: width - 200, y: y -= 20, size: 11, font });
+      page.drawText("Pulborough,", { x: width - 200, y: y -= 20, size: 11, font });
+      page.drawText("RH20 1PB", { x: width - 200, y: y -= 25, size: 11, font, color: rgb(0, 0.3, 0.6) });
+
+      // Dear Parent section
+      page.drawText("Dear Parent,", { x: 70, y: height - 180, size: 12, font: bold });
+      page.drawText("Please find below the latest report for your child.", { x: 70, y: height - 220, size: 11, font });
+      page.drawText("We are very proud of their progress this term.", { x: 70, y: height - 245, size: 11, font });
+
+      // Professional table
+      const left = 70;
+      const col1 = 70;
+      const col2 = 280;
+      const col3 = 380;
+      const tableTop = height - 320;
+
+      page.drawRectangle({ x: left, y: tableTop + 5, width: 455, height: 30, color: rgb(0.05, 0.25, 0.5) });
+      page.drawText("Subject",   { x: col1 + 10, y: tableTop + 12, size: 12, font: bold, color: rgb(1,1,1) });
+      page.drawText("score",     { x: col2 + 15, y: tableTop + 12, size: 12, font: bold, color: rgb(1,1,1) });
+      page.drawText("Comments",  { x: col3 + 10, y: tableTop + 12, size: 12, font: bold, color: rgb(1,1,1) });
+
+      page.drawLine({ start: {x: left, y: tableTop + 35}, end: {x: left + 455, y: tableTop + 35}, thickness: 1.5 });
+      page.drawLine({ start: {x: left, y: tableTop}, end: {x: left + 455, y: tableTop}, thickness: 1.5 });
+
+      [col2, col3].forEach(col => {
+        page.drawLine({ start: {x: col, y: tableTop + 35}, end: {x: col, y: tableTop - 200}, thickness: 0.5, color: rgb(0.7,0.7,0.7) });
       });
 
-      // Greeting paragraphs
-      const greetingParas = [
-        new Paragraph({ text: "Dear Parent,", bold: true }),
-        new Paragraph({ text: "Please find below the latest report for your child." }),
-        new Paragraph({ text: "We are very proud of their progress this term." }),
-      ];
-
-      // Build table with scores and comments
-      const scoreRows = [];
-      // Header row with bold labels
-      // Create a header row with dark blue background and white text for clarity
-      scoreRows.push(
-        new TableRow({
-          children: [
-            new TableCell({
-              shading: { fill: "004C99" },
-              children: [
-                new Paragraph({
-                  children: [new TextRun({ text: "Subject", bold: true, color: "FFFFFF" })],
-                  alignment: AlignmentType.CENTER,
-                }),
-              ],
-              width: { size: 30, type: WidthType.PERCENTAGE },
-            }),
-            new TableCell({
-              shading: { fill: "004C99" },
-              children: [
-                new Paragraph({
-                  children: [new TextRun({ text: "Score", bold: true, color: "FFFFFF" })],
-                  alignment: AlignmentType.CENTER,
-                }),
-              ],
-              width: { size: 15, type: WidthType.PERCENTAGE },
-            }),
-            new TableCell({
-              shading: { fill: "004C99" },
-              children: [
-                new Paragraph({
-                  children: [new TextRun({ text: "Comments", bold: true, color: "FFFFFF" })],
-                  alignment: AlignmentType.CENTER,
-                }),
-              ],
-              width: { size: 55, type: WidthType.PERCENTAGE },
-            }),
-          ],
-        })
-      );
+      y = tableTop - 30;
       for (const [subject, level] of Object.entries(data.scores)) {
         if (level === null) continue;
-        let comment = data.teacher_notes || "";
-        // Comments per subject can be extended here if needed
-        scoreRows.push(
-          new TableRow({
-            children: [
-              new TableCell({ children: [new Paragraph(subject)] }),
-              new TableCell({ children: [new Paragraph(level.toString())] }),
-              new TableCell({ children: [new Paragraph(comment)] }),
-            ],
-          })
-        );
+        page.drawText(subject, { x: col1 + 10, y: y -= 35, size: 11, font });
+        page.drawText(level.toString(), { x: col2 + 20, y: y + 35, size: 11, font });
+        page.drawLine({ start: {x: left, y: y + 15}, end: {x: left + 455, y: y + 15}, thickness: 0.5, color: rgb(0.85,0.85,0.85) });
       }
-      const scoresTable = new Table({ rows: scoreRows, width: { size: 100, type: WidthType.PERCENTAGE } });
 
-      // Longer comments section
-      const longCommentHeading = new Paragraph({ text: "Longer comments", bold: true, color: "004C99" });
-      const longCommentPara = new Paragraph(reportText);
-
-      // Assemble document sections
-      doc.addSection({
-        properties: {},
-        children: [
-          headerTable,
-          ...greetingParas,
-          scoresTable,
-          longCommentHeading,
-          longCommentPara,
-        ],
+      // Longer comments
+      y -= 60;
+      page.drawText("Longer comments", { x: 70, y: y -= 10, size: 13, font: bold });
+      const lines = reportText.match(/.{1,92}(\s|$)/g) || [reportText];
+      lines.forEach(line => {
+        page.drawText(line.trim(), { x: 70, y: y -= 22, size: 11, font });
       });
 
-      // Save DOCX to temporary file
+      // SEND PDF
+      const pdfBytes = await pdfDoc.save();
       const safeName = data.student_name.replace(/[^a-zA-Z0-9]/g, "_");
-      const filename = `${safeName}_report.docx`;
+      const filename = `${safeName}_report.pdf`;
       const tmpPath = `/tmp/${filename}`;
-      const buffer = await Packer.toBuffer(doc);
-      fs.writeFileSync(tmpPath, buffer);
-      // Prepare form data and send the DOCX
+      fs.writeFileSync(tmpPath, pdfBytes);
+
       const form = new FormData();
       form.append('chat_id', chatId);
       form.append('document', fs.createReadStream(tmpPath), { filename });
       form.append('caption', `Report for ${data.student_name}`);
+
       await axios.post(`${TELEGRAM_API}/sendDocument`, form, { headers: form.getHeaders() });
       fs.unlinkSync(tmpPath);
     }
 
-    // Update final message to accurately reflect DOCX format
-    await sendMessage(chatId, "All reports sent as beautiful DOCX files!");
+    await sendMessage(chatId, "All reports sent as beautiful PDFs!");
 
   } catch (err) {
     console.error(err);
