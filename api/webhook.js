@@ -107,60 +107,76 @@ Notes: "${data.teacher_notes || ""}"`}]
       });
       const reportText = reportResp.choices[0].message.content.trim();
 
-      // ——— CREATE PDF ———
-      const pdfDoc = await PDFDocument.create();
-      const page = pdfDoc.addPage([595, 842]);
-      const { height } = page.getSize();
-      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-      const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+              // ——— EXACTLY YOUR SCHOOL LETTER FORMAT ———
+        const pdfDoc = await PDFDocument.create();
+        const page = pdfDoc.addPage([595, 842]); // A4
+        const { width, height } = page.getSize();
+        const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+        const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-      let y = height - 50;
-      page.drawText("Student Report", { x: 50, y, size: 28, font: bold, color: rgb(0, 0.3, 0.6) });
-      y -= 50;
-      page.drawText(data.student_name, { x: 50, y, size: 22, font: bold });
+        // School crest top-right
+        if (fs.existsSync("logo.png")) {
+          const logoBytes = fs.readFileSync("logo.png");
+          const logo = await pdfDoc.embedPng(logoBytes);
+          page.drawImage(logo, { x: width - 150, y: height - 130, width: 100, height: 100 });
+        }
 
-      y -= 60;
-      page.drawText("Subject", { x: 50, y, size: 14, font: bold, color: rgb(1,1,1) });
-      page.drawText("Level", { x: 280, y, size: 14, font: bold, color: rgb(1,1,1) });
-      page.drawRectangle({ x: 45, y: y - 10, width: 505, height: 30, color: rgb(0, 0.3, 0.6) });
+        // Letterhead
+        let y = height - 160;
+        page.drawText("Church Ln,", { x: 380, y: y, size: 11, font }); y -= 18;
+        page.drawText("Bury,", { x: 380, y, size: 11, font }); y -= 18;
+        page.drawText("Pulborough,", { x: 380, y, size: 11, font }); y -= 18;
+        page.drawText("RH20 1PB", { x: 380, y, size: 11, font, color: rgb(0,0.4,0.8) });
 
-      y -= 50;
-      for (const [subject, level] of Object.entries(data.scores)) {
-        if (level === null) continue;
-        page.drawText(subject, { x: 50, y, size: 12, font });
-        page.drawText(level.toString(), { x: 290, y, size: 12, font });
-        y -= 35;
-      }
+        y -= 50;
+        page.drawText("Dear Parent,", { x: 50, y, size: 12, font });
 
-      y -= 30;
-      page.drawText("Teacher Comment", { x: 50, y, size: 14, font: bold });
-      y -= 30;
-      const lines = reportText.match(/.{1,85}(\s|$)/g) || [reportText];
-      lines.forEach(line => {
-        page.drawText(line.trim(), { x: 50, y, size: 12, font });
-        y -= 20;
-      });
+        y -= 40;
+        page.drawText("some pre-amble", { x: 50, y, size: 11, font });
 
-      // ——— SEND PDF (FIXED FOR VERCEL) ———
-      const pdfBytes = await pdfDoc.save();
-      const safeName = data.student_name.replace(/[^a-zA-Z0-9]/g, "_");
-      const filename = `${safeName}_report.pdf`;
-      const tmpPath = `/tmp/${filename}`;
-      fs.writeFileSync(tmpPath, pdfBytes);
+        // Table
+        y -= 40;
+        const drawLine = (yPos) => page.drawLine({ start: { x: 50, y: yPos }, end: { x: 545, y: yPos }, thickness: 1, color: rgb(0,0,0) });
 
-      const form = new FormData();
-      form.append('chat_id', chatId);
-      form.append('document', fs.createReadStream(tmpPath), {
-        filename: filename,
-        contentType: 'application/pdf'
-      });
-      form.append('caption', `Report for ${data.student_name}`);
+        drawLine(y); // top
+        page.drawText("Subject", { x: 60, y: y - 20, size: 12, font: bold });
+        page.drawText("score", { x: 260, y: y - 20, size: 12, font: bold });
+        page.drawText("Comments", { x: 360, y: y - 20, size: 12, font: bold });
+        drawLine(y - 30);
 
-      await axios.post(`${TELEGRAM_API}/sendDocument`, form, {
-        headers: form.getHeaders()
-      });
+        y -= 60;
+        for (const [subject, level] of Object.entries(data.scores)) {
+          if (level === null) continue;
+          page.drawText(subject, { x: 60, y, size: 11, font });
+          page.drawText(level.toString(), { x: 270, y, size: 11, font });
+          y -= 30;
+        }
+        drawLine(y + 30); // bottom
 
-      fs.unlinkSync(tmpPath);
+        // Longer comments
+        y -= 50;
+        page.drawText("Longer comments", { x: 50, y, size: 12, font: bold });
+        y -= 30;
+        const commentLines = reportText.match(/.{1,90}(\s|$)/g) || [];
+        commentLines.forEach(line => {
+          page.drawText(line.trim(), { x: 50, y, size: 11, font });
+          y -= 20;
+        });
+
+        // Save & send (same as before)
+        const pdfBytes = await pdfDoc.save();
+        const safeName = data.student_name.replace(/[^a-zA-Z0-9]/g, "_");
+        const filename = `${safeName}_report.pdf`;
+        const tmpPath = `/tmp/${filename}`;
+        fs.writeFileSync(tmpPath, pdfBytes);
+
+        const form = new FormData();
+        form.append('chat_id', chatId);
+        form.append('document', fs.createReadStream(tmpPath), { filename });
+        form.append('caption', `Report for ${data.student_name}`);
+
+        await axios.post(`${TELEGRAM_API}/sendDocument`, form, { headers: form.getHeaders() });
+        fs.unlinkSync(tmpPath);
     }
 
     await sendMessage(chatId, "All PDFs sent successfully!");
