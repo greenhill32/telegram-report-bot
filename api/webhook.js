@@ -11,6 +11,10 @@ const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
 
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
+function sanitizeText(text) {
+  return text.replace(/['']/g, "'").replace(/[""]/g, '"').replace(/[—–]/g, "-").replace(/…/g, "...").replace(/[^\x00-\x7F]/g, "");
+}
+
 async function sendMessage(chatId, text, options = {}) {
   await axios.post(`${TELEGRAM_API}/sendMessage`, { chat_id: chatId, text, ...options });
 }
@@ -94,11 +98,11 @@ You’ll receive beautiful letterheaded PDFs instantly.`);
       const reportResp = await openai.chat.completions.create({
         model: "gpt-4o-mini",
         temperature: 0.7,
-        messages: [{ role: "user", content: `Write a warm, professional 80–100 word British school report. From young male teacher, not stuffy for ${data.student_name}.
+        messages: [{ role: "user", content: `Write a warm, professional 80–100 word British school report. You're a young male teacher, cool not stuffy. Use correct pronouns (he/she/they) based on ${data.student_name}'s name.
 Scores:\n${Object.entries(data.scores).filter(([_,v])=>v!==null).map(([s,v])=>`- ${s}: ${v}/10`).join("\n") || "No scores"}
 Notes: "${data.teacher_notes || ""}"`}]
       });
-      const reportText = reportResp.choices[0].message.content.trim();
+      const reportText = sanitizeText(reportResp.choices[0].message.content.trim());
 
       // PROFESSIONAL DORSET HOUSE PDF
       const pdfDoc = await PDFDocument.create();
@@ -125,15 +129,15 @@ Notes: "${data.teacher_notes || ""}"`}]
 
       // Address block under logo
       let y = height - 100;
-      page.drawText("Church Ln,", { x: width - 200, y: y -= 20, size: 11, font });
-      page.drawText("Bury,", { x: width - 200, y: y -= 20, size: 11, font });
-      page.drawText("Pulborough,", { x: width - 200, y: y -= 20, size: 11, font });
-      page.drawText("RH20 1PB", { x: width - 200, y: y -= 25, size: 11, font, color: rgb(0, 0.3, 0.6) });
+      page.drawText(sanitizeText("Church Ln,"), { x: width - 200, y: y -= 20, size: 11, font });
+      page.drawText(sanitizeText("Bury,"), { x: width - 200, y: y -= 20, size: 11, font });
+      page.drawText(sanitizeText("Pulborough,"), { x: width - 200, y: y -= 20, size: 11, font });
+      page.drawText(sanitizeText("RH20 1PB"), { x: width - 200, y: y -= 25, size: 11, font, color: rgb(0, 0.3, 0.6) });
 
       // Dear Parent section
-      page.drawText("Dear Parent,", { x: 70, y: height - 180, size: 12, font: bold });
-      page.drawText("Please find below the latest report for your child.", { x: 70, y: height - 220, size: 11, font });
-      page.drawText("We are very proud of their progress this term.", { x: 70, y: height - 245, size: 11, font });
+      page.drawText(sanitizeText("Dear Parent,"), { x: 70, y: height - 180, size: 12, font: bold });
+      page.drawText(sanitizeText("Please find below the latest report for your child."), { x: 70, y: height - 220, size: 11, font });
+      page.drawText(sanitizeText("We are very proud of their progress this term."), { x: 70, y: height - 245, size: 11, font });
 
       // Professional table
       const left = 70;
@@ -143,9 +147,9 @@ Notes: "${data.teacher_notes || ""}"`}]
       const tableTop = height - 320;
 
       page.drawRectangle({ x: left, y: tableTop + 5, width: 455, height: 30, color: rgb(0.05, 0.25, 0.5) });
-      page.drawText("Subject",   { x: col1 + 10, y: tableTop + 12, size: 12, font: bold, color: rgb(1,1,1) });
-      page.drawText("score",     { x: col2 + 15, y: tableTop + 12, size: 12, font: bold, color: rgb(1,1,1) });
-      page.drawText("Comments",  { x: col3 + 10, y: tableTop + 12, size: 12, font: bold, color: rgb(1,1,1) });
+      page.drawText(sanitizeText("Subject"),   { x: col1 + 10, y: tableTop + 12, size: 12, font: bold, color: rgb(1,1,1) });
+      page.drawText(sanitizeText("score"),     { x: col2 + 15, y: tableTop + 12, size: 12, font: bold, color: rgb(1,1,1) });
+      page.drawText(sanitizeText("Comments"),  { x: col3 + 10, y: tableTop + 12, size: 12, font: bold, color: rgb(1,1,1) });
 
       page.drawLine({ start: {x: left, y: tableTop + 35}, end: {x: left + 455, y: tableTop + 35}, thickness: 1.5 });
       page.drawLine({ start: {x: left, y: tableTop}, end: {x: left + 455, y: tableTop}, thickness: 1.5 });
@@ -157,17 +161,17 @@ Notes: "${data.teacher_notes || ""}"`}]
       y = tableTop - 30;
       for (const [subject, level] of Object.entries(data.scores)) {
         if (level === null) continue;
-        page.drawText(subject, { x: col1 + 10, y: y -= 35, size: 11, font });
-        page.drawText(level.toString(), { x: col2 + 20, y: y + 35, size: 11, font });
+        page.drawText(sanitizeText(subject), { x: col1 + 10, y: y -= 35, size: 11, font });
+        page.drawText(sanitizeText(level.toString()), { x: col2 + 20, y: y + 35, size: 11, font });
         page.drawLine({ start: {x: left, y: y + 15}, end: {x: left + 455, y: y + 15}, thickness: 0.5, color: rgb(0.85,0.85,0.85) });
       }
 
       // Longer comments
       y -= 60;
-      page.drawText("Longer comments", { x: 70, y: y -= 10, size: 13, font: bold });
+      page.drawText(sanitizeText("Longer comments"), { x: 70, y: y -= 10, size: 13, font: bold });
       const lines = reportText.match(/.{1,92}(\s|$)/g) || [reportText];
       lines.forEach(line => {
-        page.drawText(line.trim(), { x: 70, y: y -= 22, size: 11, font });
+        page.drawText(sanitizeText(line.trim()), { x: 70, y: y -= 22, size: 11, font });
       });
 
       // SEND PDF
