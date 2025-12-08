@@ -101,7 +101,7 @@ You’ll get one beautiful PDF per student.`);
       const reportResp = await openai.chat.completions.create({
         model: "gpt-4o-mini",
         temperature: 0.7,
-        messages: [{ role: "user", content: `Write a warm, professional 120–150 word British school report for ${data.student_name}.
+        messages: [{ role: "user", content: `Write a warm, professional 80–100 word British school report. Not too stuffy. for ${data.student_name}.
 Scores:\n${Object.entries(data.scores).filter(([_,v])=>v!==null).map(([s,v])=>`- ${s}: ${v}/10`).join("\n") || "No scores"}
 Notes: "${data.teacher_notes || ""}"`}]
       });
@@ -115,8 +115,8 @@ Notes: "${data.teacher_notes || ""}"`}]
         const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
         // School crest top-right
-        if (fs.existsSync("logo.png")) {
-          const logoBytes = fs.readFileSync("logo.png");
+        if (fs.existsSync("logo.jpg")) {
+          const logoBytes = fs.readFileSync("logo.jpg");
           const logo = await pdfDoc.embedPng(logoBytes);
           page.drawImage(logo, { x: width - 150, y: height - 130, width: 100, height: 100 });
         }
