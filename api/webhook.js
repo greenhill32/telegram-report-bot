@@ -2,7 +2,9 @@ const OpenAI = require('openai');
 const axios = require('axios');
 const FormData = require('form-data');
 const fs = require('fs');
-const createReport = require('docx-templates').default;
+const Mustache = require('mustache');
+const chromium = require('@sparticuz/chromium');
+const puppeteer = require('puppeteer-core');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -99,30 +101,80 @@ Notes: "${data.teacher_notes || ""}"`}]
       });
       const reportText = reportResp.choices[0].message.content.trim();
 
-      // GENERATE DOCX FROM TEMPLATE
+      // Generate short subject comments
+      const subjectCommentsResp = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        temperature: 0.7,
+        messages: [{ 
+          role: "user", 
+          content: `You're a 25-year-old British teacher. Write SHORT 3-5 word comments for each subject.
+
+Student: ${data.student_name}
+Notes: "${data.teacher_notes}"
+Scores: ${JSON.stringify(data.scores)}
+
+Return ONLY JSON:
+{"English": "Strong creative writing", "Maths": "Needs more practice"}`
+        }]
+      });
+
+      let subjectComments = {};
+      try {
+        const json = subjectCommentsResp.choices[0].message.content.replace(/```json|```/g, "").trim();
+        subjectComments = JSON.parse(json);
+      } catch (e) {
+        Object.keys(data.scores).forEach(subject => {
+          if (data.scores[subject]) {
+            subjectComments[subject] = data.scores[subject] >= 7 ? "Good progress" : "Working hard";
+          }
+        });
+      }
+
+      // Prepare data for HTML template
       const subjects = Object.entries(data.scores)
         .filter(([_, score]) => score !== null)
         .map(([name, score]) => ({
           name: name,
           score: score.toString(),
-          comments: "" // Will add short comments in next version
+          comments: subjectComments[name] || "Progressing well"
         }));
 
-      const template = fs.readFileSync('./REPORT_TEMPLATE.docx');
-      const filled = await createReport({
-        template: template,
-        data: {
-          STUDENT_NAME: data.student_name,
-          SUBJECTS: subjects,
-          REPORT_TEXT: reportText
-        }
+      // Read HTML template
+      const htmlTemplate = fs.readFileSync('./template.html', 'utf8');
+
+      // Read logo as base64
+      const logoBase64 = fs.readFileSync('./logo_base64.txt', 'utf8');
+      
+      // Fill template with Mustache
+      const filledHtml = Mustache.render(htmlTemplate, {
+        STUDENT_NAME: data.student_name,
+        SUBJECTS: subjects,
+        REPORT_TEXT: reportText,
+        LOGO_BASE64: `data:image/jpeg;base64,${logoBase64}`
       });
 
-      // SEND DOCX
+      // Convert HTML to PDF using Puppeteer
+      const browser = await puppeteer.launch({
+        args: chromium.args,
+        defaultViewport: chromium.defaultViewport,
+        executablePath: await chromium.executablePath(),
+        headless: chromium.headless
+      });
+
+      const page = await browser.newPage();
+      await page.setContent(filledHtml, { waitUntil: 'networkidle0' });
+      const pdfBytes = await page.pdf({
+        format: 'A4',
+        printBackground: true,
+        margin: { top: '20mm', right: '20mm', bottom: '20mm', left: '20mm' }
+      });
+      await browser.close();
+
+      // SEND PDF
       const safeName = data.student_name.replace(/[^a-zA-Z0-9]/g, "_");
-      const filename = `${safeName}_report.docx`;
+      const filename = `${safeName}_report.pdf`;
       const tmpPath = `/tmp/${filename}`;
-      fs.writeFileSync(tmpPath, filled);
+      fs.writeFileSync(tmpPath, pdfBytes);
 
       const form = new FormData();
       form.append('chat_id', chatId);
@@ -133,7 +185,7 @@ Notes: "${data.teacher_notes || ""}"`}]
       fs.unlinkSync(tmpPath);
     }
 
-    await sendMessage(chatId, "All reports sent as editable Word docs!");
+    await sendMessage(chatId, "All reports sent as beautiful PDFs!");
 
   } catch (err) {
     console.error(err);
