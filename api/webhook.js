@@ -142,7 +142,7 @@ You will receive beautiful letterheaded PDFs instantly.`,
       const pdfRes = await axios.post("https://hcti.io/v1/image", {
         html, google_fonts: "Arial"
       }, {
-        auth: { username: 01KC19SWH8FCH78MZ4G20MEHHS, password: 019b029c-f228-747f-8b10-aff7aaf80909 },
+        auth: { username: "01KC19SWH8FCH78MZ4G20MEHHS", password: "019b029c-f228-747f-8b10-aff7aaf80909" },
         responseType: "arraybuffer"
       });
 
