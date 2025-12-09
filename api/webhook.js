@@ -194,7 +194,7 @@ Notes: "${data.teacher_notes || ""}"`
       });
 
       // Row drawing loop â€” FIXED
-      let y = tableTop - 30;
+      let y = tableTop - 40;
 
       for (const [subject, level] of Object.entries(data.scores)) {
         if (level === null) continue;
