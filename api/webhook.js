@@ -107,21 +107,36 @@ Return ONLY JSON like:
         continue;
       }
 
-      // Generate written report
+      // Generate written report (Tone #2 - Casual but Respectful)
       const reportResp = await openai.chat.completions.create({
         model: "gpt-4o-mini",
         temperature: 0.6,
         messages: [{
           role: "user",
           content:
-`Write an 80â€“110 word warm British school report for ${data.student_name}.
-Scores:
+`Write an 80–100 word British school report for ${data.student_name}.
+
+TONE:
+Use a casual but respectful tone: friendly, modern, and down-to-earth, like a 25-year-old teacher speaking naturally to parents.
+Warm, supportive, and clear. No clichés. No invented details. Must sound real and human.
+
+INSTRUCTIONS:
+- Base comments ONLY on the subjects and scores below.
+- Do NOT mention the scores numerically.
+- Use strengths + areas for development implied by the scores.
+- Keep it one paragraph of 80–100 words.
+
+SCORES:
 ${Object.entries(data.scores).filter(([_,v])=>v!==null).map(([s,v]) => `- ${s}: ${v}/10`).join("\n")}
-Notes: "${data.teacher_notes || ""}"`
+
+TEACHER NOTES:
+"${data.teacher_notes || ""}"
+`
         }]
       });
 
       const reportText = reportResp.choices[0].message.content.trim();
+
 
       // ---------------------------
       // PDF GENERATION
@@ -194,7 +209,7 @@ Notes: "${data.teacher_notes || ""}"`
       });
 
       // Row drawing loop â€” FIXED
-      let y = tableTop - 40;
+      let y = tableTop - 30;
 
       for (const [subject, level] of Object.entries(data.scores)) {
         if (level === null) continue;
