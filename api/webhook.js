@@ -114,7 +114,7 @@ Return ONLY JSON like:
         messages: [{
           role: "user",
           content:
-`Write an 80–110 word warm British school report for ${data.student_name}.
+`Write an 80â€“110 word warm British school report for ${data.student_name}.
 Scores:
 ${Object.entries(data.scores).filter(([_,v])=>v!==null).map(([s,v]) => `- ${s}: ${v}/10`).join("\n")}
 Notes: "${data.teacher_notes || ""}"`
@@ -133,16 +133,16 @@ Notes: "${data.teacher_notes || ""}"`
       const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
       // ----------------------------------------------------------
-      // LOGO FIX — ALWAYS WORKS (no fs, no local files)
+      // LOGO FIX â€” ALWAYS WORKS (no fs, no local files)
       // ----------------------------------------------------------
       try {
         const logoBytes = (await axios.get(LOGO_URL, { responseType: "arraybuffer" })).data;
         const logoImage = await pdfDoc.embedJpg(logoBytes);
-        const logoDims = logoImage.scale(0.38);
+        const logoDims = logoImage.scale(0.2);
 
         page.drawImage(logoImage, {
-          x: width - 180,
-          y: height - 150,
+          x: 408,
+          y: 690,
           width: logoDims.width,
           height: logoDims.height
         });
@@ -151,17 +151,17 @@ Notes: "${data.teacher_notes || ""}"`
       }
 
       // Address block
-      page.drawText("Church Ln,",     { x: width - 200, y: height - 170, size: 11, font });
-      page.drawText("Bury,",          { x: width - 200, y: height - 190, size: 11, font });
-      page.drawText("Pulborough,",    { x: width - 200, y: height - 210, size: 11, font });
-      page.drawText("RH20 1PB",       { x: width - 200, y: height - 230, size: 11, font, color: rgb(0,0.3,0.6) });
+      page.drawText("Church Ln,",     { x: 432, y: 667, size: 11, font });
+      page.drawText("Bury,",          { x: 432, y: 649, size: 11, font });
+      page.drawText("Pulborough,",    { x: 432, y: 631, size: 11, font });
+      page.drawText("RH20 1PB",       { x: 432, y: 613, size: 11, font, color: rgb(0,0.3,0.6) });
 
       // Greeting
       page.drawText("Dear Parent,", {
-        x: 70, y: height - 180, size: 13, font: bold
+        x: 70, y: 624, size: 13, font: bold
       });
       page.drawText("Please find below the latest report for your child.", {
-        x: 70, y: height - 210, size: 11, font
+        x: 70, y: 594, size: 11, font
       });
 
       // ------------------------
@@ -171,7 +171,7 @@ Notes: "${data.teacher_notes || ""}"`
       const col1 = 70;
       const col2 = 260;
       const col3 = 380;
-      const tableTop = height - 300;
+      const tableTop = 531;
 
       // Header box
       page.drawRectangle({
@@ -193,7 +193,7 @@ Notes: "${data.teacher_notes || ""}"`
         });
       });
 
-      // Row drawing loop — FIXED
+      // Row drawing loop â€” FIXED
       let y = tableTop - 30;
 
       for (const [subject, level] of Object.entries(data.scores)) {
