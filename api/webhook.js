@@ -1,5 +1,8 @@
 const OpenAI = require('openai');
 const axios = require('axios');
+const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
+const fs = require('fs');
+const FormData = require('form-data');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -7,224 +10,261 @@ const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
 
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
-// ────── MARKDOWNV2 ESCAPE HELPER ──────
-function escapeMarkdownV2(text) {
-  if (!text) return '';
-  return text.replace(/([_*[\]()~`>#+=|{}.!-])/g, '\\$1');
-}
-
-// ────── SEND MESSAGE ──────
 async function sendMessage(chatId, text, options = {}) {
-  try {
-    await axios.post(`${TELEGRAM_API}/sendMessage`, {
-      chat_id: chatId,
-      text,
-      parse_mode: 'MarkdownV2',
-      ...options
-    });
-  } catch (err) {
-    console.error("Telegram send error:", err.response?.data || err.message);
-  }
+  await axios.post(`${TELEGRAM_API}/sendMessage`, {
+    chat_id: chatId,
+    text,
+    ...options
+  });
 }
 
-// ────── DOWNLOAD VOICE FILE ──────
 async function downloadVoiceFile(fileId) {
-  const fileResponse = await axios.get(`${TELEGRAM_API}/getFile?file_id=${fileId}`);
-  const filePath = fileResponse.data.result.file_path;
-  const fileUrl = `https://api.telegram.org/file/bot${TELEGRAM_TOKEN}/${filePath}`;
-
-  const audioResponse = await axios.get(fileUrl, { responseType: 'arraybuffer' });
-  return Buffer.from(audioResponse.data);
+  const fileResp = await axios.get(`${TELEGRAM_API}/getFile?file_id=${fileId}`);
+  const fileUrl = `https://api.telegram.org/file/bot${TELEGRAM_TOKEN}/${fileResp.data.result.file_path}`;
+  const audioResp = await axios.get(fileUrl, { responseType: 'arraybuffer' });
+  return Buffer.from(audioResp.data);
 }
 
-// ────── MAIN WEBHOOK HANDLER ──────
 module.exports = async (req, res) => {
+
   if (req.method === "GET") {
-    return res.status(200).json({ status: "Report Bot is alive!", time: new Date().toISOString() });
+    return res.status(200).json({ status: "Bot is running!" });
   }
 
   if (req.method !== "POST") {
-    return res.status(405).json({ error: "Method not allowed" });
+    return res.status(405).send("Only POST allowed.");
   }
 
   try {
     const update = req.body;
 
-    // Debug incoming updates
-    console.log("INCOMING UPDATE:", JSON.stringify(update, null, 2));
+    // --------------------- /START COMMAND ------------------------
+    if (update.message?.text === "/start") {
+      await sendMessage(
+        update.message.chat.id,
+`👋 *Welcome to Report Bot!*
 
-    // ────── /start command ──────
-    if (update.message?.text?.startsWith("/start")) {
-      const welcome = escapeMarkdownV2(
-`*Welcome to Report Bot!*
+Send a *voice note* like:
 
-*How to use:*
-1\\. Send a voice note
-2\\. Speak clearly: "Harry Thompson\\. English 5, Maths 6\\. Well done\\."
-3\\. For multiple students, say: "NEXT STUDENT"
+"Harry Ramsden. English 5, Maths 7, PE 10. Brilliant term.
+NEXT STUDENT
+Lisa Simpson. English 9, Maths 9, PE 2. Hates rugby."
 
-*Example:*
-"Harry Thompson\\. English 7, Maths 8\\. Great effort\\. NEXT STUDENT\\. Sarah Jones\\. English 9, Science 10\\. Outstanding\\."
-
-Just record and send — I’ll write perfect British reports!`
+You will receive professional *PDF reports* with Dorset House branding.`,
+        { parse_mode: "Markdown" }
       );
-
-      await sendMessage(update.message.chat.id, welcome);
-      return res.status(200).json({ ok: true });
+      return res.status(200).send("ok");
     }
 
-    // ────── /help command ──────
-    if (update.message?.text?.startsWith("/help")) {
-      const help = escapeMarkdownV2(
-`*Voice Format Tips:*
+    // --------------------- /HELP COMMAND -------------------------
+    if (update.message?.text === "/help") {
+      await sendMessage(
+        update.message.chat.id,
+`*How to structure a voice note:*
 
-• Say the name first
-• Then subjects and scores: "English 8, Maths 7"
-• Add a note: "Needs to focus more"
-• For next child: say "NEXT STUDENT"
+"[Name]. English 7, Maths 6. Great progress. NEXT STUDENT..."
 
-Works even with messy speech — I’ll clean it up\\!`
+You can talk naturally — the bot cleans it up automatically.`,
+        { parse_mode: "Markdown" }
       );
-
-      await sendMessage(update.message.chat.id, help);
-      return res.status(200).json({ ok: true });
+      return res.status(200).send("ok");
     }
 
-    // ────── Reject plain text (must be voice) ──────
+    // Block normal text
     if (update.message?.text && !update.message.text.startsWith("/")) {
-      await sendMessage(update.message.chat.id,
-        escapeMarkdownV2("Please send a *voice note* — text reports are not supported\\."));
-      return res.status(200).json({ ok: true });
+      await sendMessage(update.message.chat.id, "Please send a *voice note*.", {
+        parse_mode: "Markdown"
+      });
+      return res.status(200).send("ok");
     }
 
-    // ────── PROCESS VOICE MESSAGES ──────
+    // --------------------- HANDLE VOICE --------------------------
     if (update.message?.voice) {
       const chatId = update.message.chat.id;
-      const fileId = update.message.voice.file_id;
 
-      await sendMessage(chatId, "Processing your voice note...");
+      await sendMessage(chatId, "🎤 Transcribing your voice note...");
 
-      const audioBuffer = await downloadVoiceFile(fileId);
-      const audioFile = new File([audioBuffer], "voice.ogg", { type: "audio/ogg" });
+      const audio = await downloadVoiceFile(update.message.voice.file_id);
+      const audioFile = new File([audio], "voice.ogg", { type: "audio/ogg" });
 
-      // ── Whisper transcription
+      // Whisper
       const transcription = await openai.audio.transcriptions.create({
         file: audioFile,
         model: "whisper-1",
         language: "en"
       });
 
-      const transcript = transcription.text.trim();
-      console.log("Transcript:", transcript);
-
-      if (!transcript) {
-        await sendMessage(chatId, "I couldn't hear anything\\. Please try again\\.");
-        return res.status(200).json({ ok: true });
-      }
-
-      // Split on "next student"
-      const segments = transcript
+      const segments = transcription.text
         .toLowerCase()
-        .split(/\bnext student\b/)
-        .map(x => x.trim())
-        .filter(x => x.length > 0);
+        .split("next student")
+        .map(t => t.trim())
+        .filter(t => t.length > 0);
 
-      await sendMessage(chatId, `Found ${segments.length} student(s)\\. Generating reports...`);
+      await sendMessage(chatId, `🧩 Found ${segments.length} student(s). Creating PDFs...`);
 
-      // ────── Process each student ──────
+      // ------------------ PROCESS EACH STUDENT -------------------
       for (let i = 0; i < segments.length; i++) {
-        const segment = segments[i];
+        const studentText = segments[i];
+        await sendMessage(chatId, `✏️ Processing student ${i + 1}...`);
 
-        await sendMessage(chatId, `Processing student ${i + 1} of ${segments.length}...`);
-
-        // Step 1: JSON parsing via GPT
-        const parseResponse = await openai.chat.completions.create({
+        // 1) Parse structured data
+        const parseResp = await openai.chat.completions.create({
           model: "gpt-4o-mini",
           temperature: 0,
           messages: [{
             role: "user",
-            content: `Extract student data from this spoken text into valid JSON only.
+            content:
+`Extract JSON only from this:
 
-Text: "${segment}"
+"${studentText}"
 
-Return ONLY this JSON:
 {
   "student_name": "Full Name",
-  "scores": {"English": 5, "Maths": 6, "Science": null},
-  "teacher_notes": "short comment or empty string"
+  "scores": { "English": 5, "Maths": 7, "Science": null, "PE": null },
+  "teacher_notes": "short notes"
 }`
           }]
         });
 
-        let parsedData;
+        let data;
         try {
-          const raw = parseResponse.choices[0].message.content;
-          const jsonStr = raw.replace(/```json|```/g, "").trim();
-          parsedData = JSON.parse(jsonStr);
-        } catch (err) {
-          console.error("JSON parse fail:", err);
-          await sendMessage(chatId, `Could not understand student ${i + 1} — skipping\\.`);
+          const clean = parseResp.choices[0].message.content.replace(/```json|```/g, "");
+          data = JSON.parse(clean);
+        } catch (e) {
+          await sendMessage(chatId, `⚠️ Could not parse student ${i + 1}. Skipping.`);
           continue;
         }
 
-        // Step 2: Generate written report
-        const reportResponse = await openai.chat.completions.create({
+        // 2) Generate written report
+        const reportResp = await openai.chat.completions.create({
           model: "gpt-4o-mini",
-          temperature: 0.6,
+          temperature: 0.7,
           messages: [{
             role: "user",
-            content: `Write a warm British end-of-term report (50–80 words).
-
-Student: ${parsedData.student_name}
-Scores: ${Object.entries(parsedData.scores)
-              .filter(([_, v]) => v !== null)
-              .map(([s, v]) => `${s}: ${v}/10`)
-              .join(", ") || "Not provided"}
-
-Notes: "${parsedData.teacher_notes}"
-
-Tone: encouraging, specific, positive.`
+            content:
+`Write an 80–100 word British school report for ${data.student_name}.
+Tone: warm, professional, specific.
+Scores:
+${Object.entries(data.scores)
+  .filter(([_,v]) => v !== null)
+  .map(([s,v]) => `- ${s}: ${v}/10`)
+  .join("\n")}
+Notes: "${data.teacher_notes}"`
           }]
         });
 
-        const reportText = reportResponse.choices[0].message.content.trim();
+        const reportText = reportResp.choices[0].message.content.trim();
 
-        // Step 3: Send formatted report
-        const header = escapeMarkdownV2(`*Report for ${parsedData.student_name}*`);
-        const body = escapeMarkdownV2(reportText);
+        // ------------------ BUILD PDF ------------------------------
+        const pdf = await PDFDocument.create();
+        const page = pdf.addPage([595, 842]);
+        const { width, height } = page.getSize();
+        const font = await pdf.embedFont(StandardFonts.Helvetica);
+        const bold = await pdf.embedFont(StandardFonts.HelveticaBold);
 
-        await sendMessage(chatId, `${header}\n\n${body}`);
-
-        // Step 4: Send scores summary
-        const scoresList = Object.entries(parsedData.scores)
-          .filter(([_, v]) => v !== null)
-          .map(([s, v]) => `${s}: ${v}/10`)
-          .join(" \\| ");
-
-        if (scoresList) {
-          await sendMessage(chatId, escapeMarkdownV2(`*Scores:* ${scoresList}`));
+        // Logo
+        if (fs.existsSync("logo.jpg") || fs.existsSync("logo.png")) {
+          const logoPath = fs.existsSync("logo.jpg") ? "logo.jpg" : "logo.png";
+          const logoBytes = fs.readFileSync(logoPath);
+          const logoImage = logoPath.endsWith(".jpg")
+            ? await pdf.embedJpg(logoBytes)
+            : await pdf.embedPng(logoBytes);
+          const scaled = logoImage.scale(0.35);
+          page.drawImage(logoImage, {
+            x: width - 170,
+            y: height - 140,
+            width: scaled.width,
+            height: scaled.height
+          });
         }
 
-        // separator
-        if (i < segments.length - 1) {
-          await sendMessage(chatId, "────────────────────");
-        }
+        // Address block
+        let y = height - 110;
+        ["Church Ln,", "Bury,", "Pulborough,", "RH20 1PB"].forEach(line => {
+          page.drawText(line, { x: width - 200, y, size: 11, font });
+          y -= 18;
+        });
+
+        // Intro text
+        page.drawText("Dear Parent,", { x: 70, y: height - 180, size: 12, font: bold });
+        page.drawText("Please find your child’s latest termly report below.", { x: 70, y: height - 210, size: 11, font });
+
+        // -------- Table Header --------
+        const left = 70;
+        const colSubject = left + 10;
+        const colScore = left + 200;
+        const colComment = left + 280;
+        const tableTop = height - 280;
+
+        page.drawRectangle({
+          x: left, y: tableTop, width: 455, height: 30,
+          color: rgb(0.05, 0.25, 0.5)
+        });
+
+        page.drawText("Subject", { x: colSubject, y: tableTop + 10, font: bold, size: 12, color: rgb(1,1,1) });
+        page.drawText("Score",   { x: colScore,    y: tableTop + 10, font: bold, size: 12, color: rgb(1,1,1) });
+        page.drawText("Comments",{ x: colComment,  y: tableTop + 10, font: bold, size: 12, color: rgb(1,1,1) });
+
+        // -------- Table Rows (fixed no-strikethrough) --------
+        let ty = tableTop - 20;
+        const rows = Object.entries(data.scores).filter(([_,v]) => v !== null);
+
+        rows.forEach(([subject, score], idx) => {
+          page.drawText(subject, { x: colSubject, y: ty, size: 11, font });
+          page.drawText(String(score), { x: colScore, y: ty, size: 11, font });
+
+          // draw separator except last row
+          if (idx < rows.length - 1) {
+            page.drawLine({
+              start: { x: left, y: ty - 5 },
+              end: { x: left + 455, y: ty - 5 },
+              thickness: 0.5,
+              color: rgb(0.85, 0.85, 0.85)
+            });
+          }
+
+          ty -= 30;
+        });
+
+        // -------- Longer comments --------
+        ty -= 30;
+        page.drawText("Longer comments", { x: 70, y: ty, size: 13, font: bold });
+        ty -= 25;
+
+        const lines = reportText.match(/.{1,90}(\s|$)/g) || [reportText];
+        lines.forEach(line => {
+          page.drawText(line.trim(), { x: 70, y: ty, size: 11, font });
+          ty -= 18;
+        });
+
+        // Save PDF
+        const filename = `${data.student_name.replace(/[^a-z0-9]/gi,"_")}_report.pdf`;
+        const tmpPath = `/tmp/${filename}`;
+        fs.writeFileSync(tmpPath, await pdf.save());
+
+        // Send PDF to Telegram
+        const form = new FormData();
+        form.append("chat_id", chatId);
+        form.append("document", fs.createReadStream(tmpPath), filename);
+
+        await axios.post(`${TELEGRAM_API}/sendDocument`, form, {
+          headers: form.getHeaders()
+        });
+
+        fs.unlinkSync(tmpPath);
       }
 
-      await sendMessage(chatId, "All reports completed!");
-      return res.status(200).json({ ok: true });
+      await sendMessage(chatId, "✅ All PDF reports sent.");
+      return res.status(200).send("ok");
     }
 
-    return res.status(200).json({ ok: true });
+    return res.status(200).send("ok");
 
   } catch (err) {
-    console.error("Fatal Error:", err);
-
-    if (req.body?.message?.chat?.id) {
-      await sendMessage(req.body.message.chat.id,
-        "Sorry, something went wrong\\. Please try again\\.");
-    }
-
-    return res.status(200).json({ ok: false, error: err.message });
+    console.error(err);
+    try {
+      await sendMessage(req.body.message.chat.id, `❌ Error: ${err.message}`);
+    } catch {}
+    return res.status(200).send("ok");
   }
 };
