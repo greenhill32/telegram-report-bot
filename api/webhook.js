@@ -140,10 +140,10 @@ Return ONLY JSON:
         }));
 
       // Read HTML template
-      const htmlTemplate = fs.readFileSync('./template.html', 'utf8');
+      const htmlTemplate = fs.readFileSync(__dirname + '/template.html', 'utf8');
 
       // Read logo as base64
-      const logoBase64 = fs.readFileSync('./logo_base64.txt', 'utf8');
+      const logoBase64 = fs.readFileSync(__dirname + '/logo_base64.txt', 'utf8');
       
       // Fill template with Mustache
       const filledHtml = Mustache.render(htmlTemplate, {
