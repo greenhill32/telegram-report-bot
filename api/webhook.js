@@ -29,16 +29,14 @@ module.exports = async (req, res) => {
     const update = req.body;
 
     if (update.message?.text === "/start" || update.message?.text === "/help") {
-      await sendMessage(update.message.chat.id, `📚 Dorset House Report Bot
+      await sendMessage(update.message.chat.id, `Dorset House Report Bot
 
-Send a voice note:
-"Harry Ramsden. English 7, Maths 5, PE 9. Great attitude, needs punctuation work.
-
+Send a voice note like:
+"Harry Ramsden. English 5, Maths 7, PE 10. Brilliant term.
 NEXT STUDENT
+Lisa Simpson. English 9, Maths 9, PE 2. Hates rugby."
 
-Lisa Simpson. English 9, Maths 9, PE 2. Excellent work, hates rugby."
-
-You'll get editable Word documents with your letterhead.`);
+You’ll receive beautiful letterheaded PDFs instantly.`);
       return res.status(200).send("ok");
     }
 
@@ -50,7 +48,7 @@ You'll get editable Word documents with your letterhead.`);
     const chatId = update.message.chat.id;
     const fileId = update.message.voice.file_id;
 
-    await sendMessage(chatId, "🎙️ Transcribing...");
+    await sendMessage(chatId, "Transcribing and creating your reports...");
 
     const audioBuffer = await downloadVoiceFile(fileId);
     const audioFile = new File([audioBuffer], "voice.ogg", { type: "audio/ogg" });
@@ -61,38 +59,25 @@ You'll get editable Word documents with your letterhead.`);
       language: "en"
     });
 
-    const segments = transcription.text
-      .split(/next student/i)
+    const segments = transcription.text.toLowerCase()
+      .split("next student")
       .map(s => s.trim())
-      .filter(s => s.length > 10);
+      .filter(s => s.length > 0);
 
-    if (segments.length === 0) {
-      await sendMessage(chatId, "❌ No students found. Say 'NEXT STUDENT' between each.");
-      return res.status(200).send("ok");
-    }
-
-    await sendMessage(chatId, `✅ Found ${segments.length} student(s). Generating...`);
+    await sendMessage(chatId, `Found ${segments.length} student(s). Generating letterheaded PDFs...`);
 
     for (let i = 0; i < segments.length; i++) {
       const studentText = segments[i];
 
-      // Parse student data
+      // Parse with GPT
       const parseResp = await openai.chat.completions.create({
         model: "gpt-4o-mini",
         temperature: 0,
-        messages: [{ 
-          role: "user", 
-          content: `Parse teacher's voice note into JSON.
-
-Voice note: "${studentText}"
-
-Return ONLY valid JSON:
-{
+        messages: [{ role: "user", content: `Return ONLY valid JSON:\n"${studentText}"\n\n{
   "student_name": "Full Name",
-  "scores": {"English": 7, "Maths": 5, "PE": 9, "Science": null},
-  "teacher_notes": "All descriptive comments"
-}`
-        }]
+  "scores": { "English": 5, "Maths": 7, "PE": 10, "Science": null },
+  "teacher_notes": "any notes"
+}`}]
       });
 
       let data;
@@ -100,67 +85,30 @@ Return ONLY valid JSON:
         const json = parseResp.choices[0].message.content.replace(/```json|```/g, "").trim();
         data = JSON.parse(json);
       } catch (e) {
-        await sendMessage(chatId, `⚠️ Couldn't parse student ${i+1}`);
+        await sendMessage(chatId, `Could not parse student ${i+1}.`);
         continue;
-      }
-
-      // Generate subject comments
-      const subjectCommentsResp = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        temperature: 0.7,
-        messages: [{ 
-          role: "user", 
-          content: `You're a 25-year-old British teacher. Write SHORT 3-5 word comments for each subject.
-
-Student: ${data.student_name}
-Notes: "${data.teacher_notes}"
-Scores: ${JSON.stringify(data.scores)}
-
-Return ONLY JSON:
-{"English": "Strong creative writing", "Maths": "Needs more practice"}`
-        }]
-      });
-
-      let subjectComments = {};
-      try {
-        const json = subjectCommentsResp.choices[0].message.content.replace(/```json|```/g, "").trim();
-        subjectComments = JSON.parse(json);
-      } catch (e) {
-        Object.keys(data.scores).forEach(subject => {
-          if (data.scores[subject]) {
-            subjectComments[subject] = data.scores[subject] >= 7 ? "Good progress" : "Working hard";
-          }
-        });
       }
 
       // Generate full report
       const reportResp = await openai.chat.completions.create({
         model: "gpt-4o-mini",
-        temperature: 0.8,
-        messages: [{ 
-          role: "user", 
-          content: `You're a 25-year-old British teacher. Cool but professional. Write 120-150 words for ${data.student_name}. Use correct pronouns based on name.
-
-Scores: ${Object.entries(data.scores).filter(([_,v])=>v).map(([s,v])=>`${s}: ${v}/10`).join(", ")}
-Notes: "${data.teacher_notes}"
-
-Natural language ("stepped up", "smashing it"). Be honest, warm, specific. No bullets.`
-        }]
+        temperature: 0.7,
+        messages: [{ role: "user", content: `Write a warm, professional 80–100 word British school report. From young male teacher, not stuffy for ${data.student_name}.
+Scores:\n${Object.entries(data.scores).filter(([_,v])=>v!==null).map(([s,v])=>`- ${s}: ${v}/10`).join("\n") || "No scores"}
+Notes: "${data.teacher_notes || ""}"`}]
       });
       const reportText = reportResp.choices[0].message.content.trim();
 
-      // Prepare data for template
+      // GENERATE DOCX FROM TEMPLATE
       const subjects = Object.entries(data.scores)
         .filter(([_, score]) => score !== null)
         .map(([name, score]) => ({
           name: name,
           score: score.toString(),
-          comments: subjectComments[name] || "Progressing well"
+          comments: "" // Will add short comments in next version
         }));
 
-      // Load template and fill it
       const template = fs.readFileSync('./REPORT_TEMPLATE.docx');
-      
       const filled = await createReport({
         template: template,
         data: {
@@ -170,31 +118,27 @@ Natural language ("stepped up", "smashing it"). Be honest, warm, specific. No bu
         }
       });
 
-      // Save and send
+      // SEND DOCX
       const safeName = data.student_name.replace(/[^a-zA-Z0-9]/g, "_");
-      const filename = `${safeName}_Report.docx`;
+      const filename = `${safeName}_report.docx`;
       const tmpPath = `/tmp/${filename}`;
       fs.writeFileSync(tmpPath, filled);
 
       const form = new FormData();
       form.append('chat_id', chatId);
       form.append('document', fs.createReadStream(tmpPath), { filename });
-      form.append('caption', `📄 ${data.student_name}'s Report`);
+      form.append('caption', `Report for ${data.student_name}`);
 
-      await axios.post(`${TELEGRAM_API}/sendDocument`, form, { 
-        headers: form.getHeaders() 
-      });
+      await axios.post(`${TELEGRAM_API}/sendDocument`, form, { headers: form.getHeaders() });
       fs.unlinkSync(tmpPath);
-
-      console.log(`✅ ${data.student_name}`);
     }
 
-    await sendMessage(chatId, "✨ All reports sent!");
+    await sendMessage(chatId, "All reports sent as editable Word docs!");
 
   } catch (err) {
-    console.error("Error:", err);
+    console.error(err);
     if (req.body.message?.chat?.id) {
-      await sendMessage(req.body.message.chat.id, `❌ Error: ${err.message}`);
+      await sendMessage(req.body.message.chat.id, `Error: ${err.message}`);
     }
   }
 
