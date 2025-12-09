@@ -1,5 +1,5 @@
 ///
-// Dorset House Report Bot - FINAL WORKING VERSION (HARDENED PARSER - OPTION B)
+// Dorset House Report Bot - FINAL WORKING VERSION (HARDENED PARSER + COMMENTS IN TABLE)
 const OpenAI = require('openai');
 const axios = require('axios');
 const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
@@ -43,6 +43,16 @@ function normaliseSubjectName(raw) {
     .split(" ")
     .map(w => w.charAt(0).toUpperCase() + w.slice(1))
     .join(" ");
+}
+
+// Clean up comment text, handling #no_comment# etc.
+function normaliseCommentText(raw) {
+  if (!raw || typeof raw !== "string") return "";
+  const lower = raw.toLowerCase();
+  if (lower.includes("#no_comment#") || lower.includes("no comment")) {
+    return "";
+  }
+  return raw.trim();
 }
 
 module.exports = async (req, res) => {
@@ -103,7 +113,7 @@ You will receive beautifully formatted letterheaded PDFs.`);
       const studentText = segments[i];
 
       // ---------------------------
-      // SMART, HARDENED PARSER
+      // SMART, HARDENED PARSER WITH COMMENTS + TEACHER NOTES BOUNDARY
       // ---------------------------
       const parsePrompt = `
 You will be given a short, spoken-style description for a single pupil.
@@ -114,14 +124,15 @@ The teacher may:
 - Give scores, comments, both, or neither.
 - Miss some subjects entirely.
 - Speak casually or inconsistently.
+- Say phrases like "teachers notes", "teacher notes", "now teacher notes", or "#teachers_notes#" to move from subject-level info to general notes.
 
-Your job:
-1. Detect the pupil's name (best guess if needed).
-2. Detect each subject actually mentioned.
-3. Extract a score ONLY if clearly stated as a number from 0–10.
-4. Put any general comments that are not tied to a single subject into "teacher_notes".
-5. Do NOT invent subjects, scores, or achievements.
+INTERPRETATION RULES
+1. Everything that is clearly tied to a specific subject (e.g. "english 5 great work", "maths 5 struggled a bit", "pe he is doing really well") should be treated as SUBJECT-LEVEL information.
+2. Anything AFTER a "teacher notes" marker ("teacher notes", "teachers notes", "now teacher notes", "#teachers_notes#") should be treated as general TEACHER NOTES about the pupil overall.
+3. If there is no explicit teacher-notes marker, treat comments clearly about the whole term or the child's general attitude as TEACHER NOTES.
+4. If the teacher says "no comment" or "#no_comment#" for a subject, that subject's comment must be an empty string "".
 
+YOUR JOB:
 Return ONLY strict JSON in this format:
 
 {
@@ -130,16 +141,28 @@ Return ONLY strict JSON in this format:
     "<subject>": <integer 0-10>,
     "<subject>": <integer 0-10>
   },
-  "teacher_notes": "general notes or empty string"
+  "subject_comments": {
+    "<subject>": "short comment about this subject or empty string",
+    "<subject>": ""
+  },
+  "teacher_notes": "general notes about the pupil or empty string"
 }
 
-Rules:
-- Only include subjects that were actually mentioned.
-- If a subject is mentioned but no clear score is given, omit it from "scores".
-- If no clear notes exist, "teacher_notes" should be "".
-- Never include null; use empty objects or "" instead.
-- Do not add commentary outside the JSON.
-  
+DETAILED RULES:
+- Only include subjects that were actually mentioned in the text.
+- A subject may have:
+  - a score only,
+  - a comment only,
+  - a score and a comment,
+  - or neither (then do not include it).
+- If a clear numerical score 0–10 is given for a subject, put it in "scores".
+- If descriptive words follow a subject or score that clearly describe performance in that subject, put them in "subject_comments[subject]".
+- If the teacher says "no comment" or "#no_comment#" for a subject, set "subject_comments[subject]" to "".
+- General remarks that are not tied to any single subject (especially after a teacher-notes marker) go into "teacher_notes".
+- If there are no clear general notes, "teacher_notes" should be "".
+- Never use null. Use empty objects {} and empty strings "" when needed.
+- Do NOT add or invent subjects, scores, or achievements.
+
 TEXT:
 """${studentText}"""
 `;
@@ -194,18 +217,40 @@ TEXT:
       for (const [rawSubject, rawValue] of Object.entries(rawScores)) {
         const subject = normaliseSubjectName(rawSubject);
         const n = Number(rawValue);
-
         if (!Number.isFinite(n)) continue;
-
         const clamped = Math.max(0, Math.min(10, Math.round(n)));
         cleanedScores[subject] = clamped;
       }
 
       data.scores = cleanedScores;
 
-      // If absolutely nothing usable, still continue but with empty scores
+      // Ensure subject_comments is an object and clean it
+      const rawSubjectComments = (data.subject_comments && typeof data.subject_comments === "object")
+        ? data.subject_comments
+        : {};
+      const cleanedSubjectComments = {};
+
+      for (const [rawSubject, rawComment] of Object.entries(rawSubjectComments)) {
+        const subject = normaliseSubjectName(rawSubject);
+        const commentText = normaliseCommentText(rawComment);
+        cleanedSubjectComments[subject] = commentText;
+      }
+
+      // Ensure every subject with a score at least has a comment key
+      for (const subject of Object.keys(data.scores)) {
+        if (!(subject in cleanedSubjectComments)) {
+          cleanedSubjectComments[subject] = "";
+        }
+      }
+
+      data.subject_comments = cleanedSubjectComments;
+
+      // Final safety nets
       if (!data.scores || typeof data.scores !== "object") {
         data.scores = {};
+      }
+      if (!data.subject_comments || typeof data.subject_comments !== "object") {
+        data.subject_comments = {};
       }
 
       // ---------------------------
@@ -213,6 +258,11 @@ TEXT:
       // ---------------------------
       const scoreLines = Object.entries(data.scores || {})
         .map(([s, v]) => `- ${s}: ${v}/10`)
+        .join("\n");
+
+      const commentLines = Object.entries(data.subject_comments || {})
+        .filter(([, c]) => c && c.trim().length > 0)
+        .map(([s, c]) => `- ${s}: ${c}`)
         .join("\n");
 
       const reportPrompt = `
@@ -223,16 +273,20 @@ Use a casual but respectful tone: friendly, modern, and down-to-earth, like a 25
 Warm, supportive, and clear. No clichés. No invented details. Must sound real and human.
 
 INSTRUCTIONS:
-- Base comments ONLY on the subjects and scores below.
-- Do NOT mention the scores numerically.
-- Use strengths and areas for development implied by the scores.
+- Base the report primarily on the subjects and scores provided.
+- Use "teacher_notes" as general guidance about the pupil's term.
+- You MAY use the subject comments as subtle hints, but do not copy them verbatim or list them mechanically.
+- Do NOT mention the scores numerically (do not say "7/10").
 - Keep it one paragraph of 80–100 words.
 - If there are no scores, write a general but realistic termly summary.
 
-SCORES:
+SUBJECT SCORES:
 ${scoreLines || "No explicit scores provided."}
 
-TEACHER NOTES:
+SUBJECT COMMENTS (hints only):
+${commentLines || "No specific subject comments."}
+
+TEACHER NOTES (overall):
 "${data.teacher_notes}"
 `;
 
@@ -290,7 +344,7 @@ TEACHER NOTES:
       });
 
       // ------------------------
-      // TABLE (Subjects & Scores)
+      // TABLE (Subjects, Scores, Comments)
       // ------------------------
       const left = 70;
       const col1 = 70;
@@ -318,15 +372,30 @@ TEACHER NOTES:
         });
       });
 
+      // Build unified subject list (scores + comments)
+      const scoreSubjects = Object.keys(data.scores || {});
+      const commentSubjects = Object.keys(data.subject_comments || {});
+      const subjectSet = new Set([...scoreSubjects, ...commentSubjects]);
+      const allSubjects = Array.from(subjectSet);
+
       // Row drawing loop (hardened)
       let y = tableTop - 40; // small gap under header
 
-      for (const [subject, level] of Object.entries(data.scores || {})) {
+      for (const subject of allSubjects) {
         y -= 30;
 
+        const level = data.scores?.[subject];
+        const comment = data.subject_comments?.[subject] || "";
+
         page.drawText(subject, { x: col1 + 10, y, size: 11, font });
-        page.drawText(level.toString(), { x: col2 + 10, y, size: 11, font });
-        page.drawText("", { x: col3 + 10, y, size: 11, font }); // placeholder for future comments
+
+        if (level !== undefined && level !== null && level !== "") {
+          page.drawText(level.toString(), { x: col2 + 10, y, size: 11, font });
+        }
+
+        if (comment) {
+          page.drawText(comment, { x: col3 + 10, y, size: 11, font });
+        }
 
         page.drawLine({
           start: { x: left, y: y - 5 },
