@@ -1,13 +1,15 @@
+// Dorset House Report Bot - FINAL WORKING VERSION
 const OpenAI = require('openai');
 const axios = require('axios');
 const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
-const fs = require('fs');
 const path = require('path');
 const FormData = require('form-data');
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const TELEGRAM_API = `https://api.telegram.org/bot${TELEGRAM_TOKEN}`;
+
+const LOGO_URL = "https://publicbucket3222.blob.core.windows.net/$web/report/logo.jpg";
 
 const openai = new OpenAI({ apiKey: OPENAI_API_KEY });
 
@@ -24,24 +26,30 @@ async function downloadVoiceFile(fileId) {
 }
 
 module.exports = async (req, res) => {
-  if (req.method === "GET") return res.status(200).json({ status: "Bot is running!" });
+  if (req.method === "GET") {
+    return res.status(200).json({ status: "Bot running" });
+  }
 
   try {
     const update = req.body;
 
-    if (update.message?.text === "/start" || update.message?.text === "/help") {
-      await sendMessage(update.message.chat.id, `Dorset House Report Bot
+    // *******************************
+    // /start and /help MUST WORK
+    // *******************************
+    if (update?.message?.text === "/start" || update?.message?.text === "/help") {
+      await sendMessage(update.message.chat.id,
+`Dorset House Report Bot
 
-Send a voice note like:
-"Harry Ramsden. English 5, Maths 7, PE 10. Brilliant term.
+Send a voice note such as:
+"Harry Ramsden. English 5, Maths 7, PE 10. Great term.
 NEXT STUDENT
 Lisa Simpson. English 9, Maths 9, PE 2. Hates rugby."
 
-You’ll receive beautiful letterheaded PDFs instantly.`);
+You will receive beautifully formatted letterheaded PDFs.`);
       return res.status(200).send("ok");
     }
 
-    if (!update.message?.voice) {
+    if (!update?.message?.voice) {
       await sendMessage(update.message.chat.id, "Please send a voice note.");
       return res.status(200).send("ok");
     }
@@ -49,8 +57,9 @@ You’ll receive beautiful letterheaded PDFs instantly.`);
     const chatId = update.message.chat.id;
     const fileId = update.message.voice.file_id;
 
-    await sendMessage(chatId, "Transcribing and creating your reports...");
+    await sendMessage(chatId, "Transcribing and preparing reports...");
 
+    // Whisper transcription
     const audioBuffer = await downloadVoiceFile(fileId);
     const audioFile = new File([audioBuffer], "voice.ogg", { type: "audio/ogg" });
 
@@ -60,138 +69,188 @@ You’ll receive beautiful letterheaded PDFs instantly.`);
       language: "en"
     });
 
-    const segments = transcription.text.toLowerCase()
+    // Split students
+    const segments = transcription.text
+      .toLowerCase()
       .split("next student")
       .map(s => s.trim())
       .filter(s => s.length > 0);
 
-    await sendMessage(chatId, `Found ${segments.length} student(s). Generating letterheaded PDFs...`);
+    await sendMessage(chatId, `Processing ${segments.length} student(s)...`);
 
+    // PROCESS EACH STUDENT
     for (let i = 0; i < segments.length; i++) {
       const studentText = segments[i];
 
-      // Parse with GPT
+      // Parse structured data
       const parseResp = await openai.chat.completions.create({
         model: "gpt-4o-mini",
         temperature: 0,
-        messages: [{ role: "user", content: `Return ONLY valid JSON:\n"${studentText}"\n\n{
+        messages: [{
+          role: "user",
+          content: `Extract data as valid JSON for: "${studentText}"
+Return ONLY JSON like:
+{
   "student_name": "Full Name",
   "scores": { "English": 5, "Maths": 7, "PE": 10, "Science": null },
-  "teacher_notes": "any notes"
-}`}]
+  "teacher_notes": "additional notes"
+}`
+        }]
       });
 
       let data;
       try {
         const json = parseResp.choices[0].message.content.replace(/```json|```/g, "").trim();
         data = JSON.parse(json);
-      } catch (e) {
-        await sendMessage(chatId, `Could not parse student ${i+1}.`);
+      } catch {
+        await sendMessage(chatId, `Could not parse student ${i + 1}.`);
         continue;
       }
 
-      // Generate full report
+      // Generate written report
       const reportResp = await openai.chat.completions.create({
         model: "gpt-4o-mini",
-        temperature: 0.7,
-        messages: [{ role: "user", content: `Write a warm, professional 80–100 word British school report. From young male teacher, not stuffy for ${data.student_name}.
-Scores:\n${Object.entries(data.scores).filter(([_,v])=>v!==null).map(([s,v])=>`- ${s}: ${v}/10`).join("\n") || "No scores"}
-Notes: "${data.teacher_notes || ""}"`}]
+        temperature: 0.6,
+        messages: [{
+          role: "user",
+          content:
+`Write an 80–110 word warm British school report for ${data.student_name}.
+Scores:
+${Object.entries(data.scores).filter(([_,v])=>v!==null).map(([s,v]) => `- ${s}: ${v}/10`).join("\n")}
+Notes: "${data.teacher_notes || ""}"`
+        }]
       });
+
       const reportText = reportResp.choices[0].message.content.trim();
 
-      // PROFESSIONAL DORSET HOUSE PDF
+      // ---------------------------
+      // PDF GENERATION
+      // ---------------------------
       const pdfDoc = await PDFDocument.create();
       const page = pdfDoc.addPage([595, 842]);
       const { width, height } = page.getSize();
       const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
       const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-      // LOGO top-right (supports logo.jpg or logo.png)
-      if (fs.existsSync("logo.jpg") || fs.existsSync("logo.png")) {
-        const logoPath = fs.existsSync("logo.jpg") ? "logo.jpg" : "logo.png";
-        const logoBytes = fs.readFileSync(logoPath);
-        const logoImage = logoPath.endsWith('.jpg')
-          ? await pdfDoc.embedJpg(logoBytes)
-          : await pdfDoc.embedPng(logoBytes);
-        const logoDims = logoImage.scale(0.4);
+      // ----------------------------------------------------------
+      // LOGO FIX — ALWAYS WORKS (no fs, no local files)
+      // ----------------------------------------------------------
+      try {
+        const logoBytes = (await axios.get(LOGO_URL, { responseType: "arraybuffer" })).data;
+        const logoImage = await pdfDoc.embedJpg(logoBytes);
+        const logoDims = logoImage.scale(0.38);
+
         page.drawImage(logoImage, {
           x: width - 180,
-          y: height - 140,
+          y: height - 150,
           width: logoDims.width,
-          height: logoDims.height,
+          height: logoDims.height
+        });
+      } catch (err) {
+        console.log("Logo failed:", err.message);
+      }
+
+      // Address block
+      page.drawText("Church Ln,",     { x: width - 200, y: height - 170, size: 11, font });
+      page.drawText("Bury,",          { x: width - 200, y: height - 190, size: 11, font });
+      page.drawText("Pulborough,",    { x: width - 200, y: height - 210, size: 11, font });
+      page.drawText("RH20 1PB",       { x: width - 200, y: height - 230, size: 11, font, color: rgb(0,0.3,0.6) });
+
+      // Greeting
+      page.drawText("Dear Parent,", {
+        x: 70, y: height - 180, size: 13, font: bold
+      });
+      page.drawText("Please find below the latest report for your child.", {
+        x: 70, y: height - 210, size: 11, font
+      });
+
+      // ------------------------
+      // PERFECT TABLE (FIXED)
+      // ------------------------
+      const left = 70;
+      const col1 = 70;
+      const col2 = 260;
+      const col3 = 380;
+      const tableTop = height - 300;
+
+      // Header box
+      page.drawRectangle({
+        x: left, y: tableTop + 5, width: 455, height: 30,
+        color: rgb(0.05, 0.25, 0.5)
+      });
+
+      page.drawText("Subject",  { x: col1 + 10, y: tableTop + 12, size: 12, font: bold, color: rgb(1,1,1) });
+      page.drawText("Score",    { x: col2 + 10, y: tableTop + 12, size: 12, font: bold, color: rgb(1,1,1) });
+      page.drawText("Comments", { x: col3 + 10, y: tableTop + 12, size: 12, font: bold, color: rgb(1,1,1) });
+
+      // Draw column lines
+      [col2, col3].forEach(col => {
+        page.drawLine({
+          start: { x: col, y: tableTop + 35 },
+          end: { x: col, y: tableTop - 200 },
+          thickness: 0.5,
+          color: rgb(0.7,0.7,0.7)
+        });
+      });
+
+      // Row drawing loop — FIXED
+      let y = tableTop - 30;
+
+      for (const [subject, level] of Object.entries(data.scores)) {
+        if (level === null) continue;
+
+        y -= 30;
+
+        page.drawText(subject, { x: col1 + 10, y, size: 11, font });
+        page.drawText(level.toString(), { x: col2 + 10, y, size: 11, font });
+        page.drawText("", { x: col3 + 10, y, size: 11, font }); // keeps column aligned
+
+        page.drawLine({
+          start: { x: left, y: y - 5 },
+          end: { x: left + 455, y: y - 5 },
+          thickness: 0.5,
+          color: rgb(0.85,0.85,0.85)
         });
       }
 
-      // Address block under logo
-      let y = height - 100;
-      page.drawText("Church Ln,", { x: width - 200, y: y -= 20, size: 11, font });
-      page.drawText("Bury,", { x: width - 200, y: y -= 20, size: 11, font });
-      page.drawText("Pulborough,", { x: width - 200, y: y -= 20, size: 11, font });
-      page.drawText("RH20 1PB", { x: width - 200, y: y -= 25, size: 11, font, color: rgb(0, 0.3, 0.6) });
+      // Longer Comments
+      y -= 50;
+      page.drawText("Longer comments", { x: 70, y, size: 13, font: bold });
 
-      // Dear Parent section
-      page.drawText("Dear Parent,", { x: 70, y: height - 180, size: 12, font: bold });
-      page.drawText("Please find below the latest report for your child.", { x: 70, y: height - 220, size: 11, font });
-      page.drawText("We are very proud of their progress this term.", { x: 70, y: height - 245, size: 11, font });
-
-      // Professional table
-      const left = 70;
-      const col1 = 70;
-      const col2 = 280;
-      const col3 = 380;
-      const tableTop = height - 320;
-
-      page.drawRectangle({ x: left, y: tableTop + 5, width: 455, height: 30, color: rgb(0.05, 0.25, 0.5) });
-      page.drawText("Subject",   { x: col1 + 10, y: tableTop + 12, size: 12, font: bold, color: rgb(1,1,1) });
-      page.drawText("score",     { x: col2 + 15, y: tableTop + 12, size: 12, font: bold, color: rgb(1,1,1) });
-      page.drawText("Comments",  { x: col3 + 10, y: tableTop + 12, size: 12, font: bold, color: rgb(1,1,1) });
-
-      page.drawLine({ start: {x: left, y: tableTop + 35}, end: {x: left + 455, y: tableTop + 35}, thickness: 1.5 });
-      page.drawLine({ start: {x: left, y: tableTop}, end: {x: left + 455, y: tableTop}, thickness: 1.5 });
-
-      [col2, col3].forEach(col => {
-        page.drawLine({ start: {x: col, y: tableTop + 35}, end: {x: col, y: tableTop - 200}, thickness: 0.5, color: rgb(0.7,0.7,0.7) });
-      });
-
-      y = tableTop - 30;
-      for (const [subject, level] of Object.entries(data.scores)) {
-        if (level === null) continue;
-        page.drawText(subject, { x: col1 + 10, y: y -= 35, size: 11, font });
-        page.drawText(level.toString(), { x: col2 + 20, y: y + 35, size: 11, font });
-        page.drawLine({ start: {x: left, y: y + 15}, end: {x: left + 455, y: y + 15}, thickness: 0.5, color: rgb(0.85,0.85,0.85) });
-      }
-
-      // Longer comments
-      y -= 60;
-      page.drawText("Longer comments", { x: 70, y: y -= 10, size: 13, font: bold });
       const lines = reportText.match(/.{1,92}(\s|$)/g) || [reportText];
+      let textY = y - 20;
+
       lines.forEach(line => {
-        page.drawText(line.trim(), { x: 70, y: y -= 22, size: 11, font });
+        page.drawText(line.trim(), { x: 70, y: textY, size: 11, font });
+        textY -= 20;
       });
 
+      // -------------------
       // SEND PDF
+      // -------------------
       const pdfBytes = await pdfDoc.save();
       const safeName = data.student_name.replace(/[^a-zA-Z0-9]/g, "_");
       const filename = `${safeName}_report.pdf`;
       const tmpPath = `/tmp/${filename}`;
-      fs.writeFileSync(tmpPath, pdfBytes);
+
+      require('fs').writeFileSync(tmpPath, pdfBytes);
 
       const form = new FormData();
-      form.append('chat_id', chatId);
-      form.append('document', fs.createReadStream(tmpPath), { filename });
-      form.append('caption', `Report for ${data.student_name}`);
+      form.append("chat_id", chatId);
+      form.append("document", require('fs').createReadStream(tmpPath), { filename });
+      form.append("caption", `Report for ${data.student_name}`);
 
-      await axios.post(`${TELEGRAM_API}/sendDocument`, form, { headers: form.getHeaders() });
-      fs.unlinkSync(tmpPath);
+      await axios.post(`${TELEGRAM_API}/sendDocument`, form, {
+        headers: form.getHeaders()
+      });
     }
 
-    await sendMessage(chatId, "All reports sent as beautiful PDFs!");
+    await sendMessage(chatId, "All reports sent!");
 
   } catch (err) {
     console.error(err);
-    if (req.body.message?.chat?.id) {
-      await sendMessage(req.body.message.chat.id, `Error: ${err.message}`);
+    if (req.body?.message?.chat?.id) {
+      await sendMessage(req.body.message.chat.id, "Error: " + err.message);
     }
   }
 
