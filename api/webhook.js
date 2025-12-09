@@ -1,9 +1,8 @@
 const OpenAI = require('openai');
 const axios = require('axios');
-const { PDFDocument, StandardFonts, rgb } = require('pdf-lib');
-const fs = require('fs');
-const path = require('path');
 const FormData = require('form-data');
+const fs = require('fs');
+const createReport = require('docx-templates').default;
 
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
@@ -30,14 +29,16 @@ module.exports = async (req, res) => {
     const update = req.body;
 
     if (update.message?.text === "/start" || update.message?.text === "/help") {
-      await sendMessage(update.message.chat.id, `Dorset House Report Bot
+      await sendMessage(update.message.chat.id, `📚 Dorset House Report Bot
 
-Send a voice note like:
-"Harry Ramsden. English 5, Maths 7, PE 10. Brilliant term.
+Send a voice note:
+"Harry Ramsden. English 7, Maths 5, PE 9. Great attitude, needs punctuation work.
+
 NEXT STUDENT
-Lisa Simpson. English 9, Maths 9, PE 2. Hates rugby."
 
-You’ll receive beautiful letterheaded PDFs instantly.`);
+Lisa Simpson. English 9, Maths 9, PE 2. Excellent work, hates rugby."
+
+You'll get editable Word documents with your letterhead.`);
       return res.status(200).send("ok");
     }
 
@@ -49,7 +50,7 @@ You’ll receive beautiful letterheaded PDFs instantly.`);
     const chatId = update.message.chat.id;
     const fileId = update.message.voice.file_id;
 
-    await sendMessage(chatId, "Transcribing and creating your reports...");
+    await sendMessage(chatId, "🎙️ Transcribing...");
 
     const audioBuffer = await downloadVoiceFile(fileId);
     const audioFile = new File([audioBuffer], "voice.ogg", { type: "audio/ogg" });
@@ -60,25 +61,38 @@ You’ll receive beautiful letterheaded PDFs instantly.`);
       language: "en"
     });
 
-    const segments = transcription.text.toLowerCase()
-      .split("next student")
+    const segments = transcription.text
+      .split(/next student/i)
       .map(s => s.trim())
-      .filter(s => s.length > 0);
+      .filter(s => s.length > 10);
 
-    await sendMessage(chatId, `Found ${segments.length} student(s). Generating letterheaded PDFs...`);
+    if (segments.length === 0) {
+      await sendMessage(chatId, "❌ No students found. Say 'NEXT STUDENT' between each.");
+      return res.status(200).send("ok");
+    }
+
+    await sendMessage(chatId, `✅ Found ${segments.length} student(s). Generating...`);
 
     for (let i = 0; i < segments.length; i++) {
       const studentText = segments[i];
 
-      // Parse with GPT
+      // Parse student data
       const parseResp = await openai.chat.completions.create({
         model: "gpt-4o-mini",
         temperature: 0,
-        messages: [{ role: "user", content: `Return ONLY valid JSON:\n"${studentText}"\n\n{
+        messages: [{ 
+          role: "user", 
+          content: `Parse teacher's voice note into JSON.
+
+Voice note: "${studentText}"
+
+Return ONLY valid JSON:
+{
   "student_name": "Full Name",
-  "scores": { "English": 5, "Maths": 7, "PE": 10, "Science": null },
-  "teacher_notes": "any notes"
-}`}]
+  "scores": {"English": 7, "Maths": 5, "PE": 9, "Science": null},
+  "teacher_notes": "All descriptive comments"
+}`
+        }]
       });
 
       let data;
@@ -86,112 +100,101 @@ You’ll receive beautiful letterheaded PDFs instantly.`);
         const json = parseResp.choices[0].message.content.replace(/```json|```/g, "").trim();
         data = JSON.parse(json);
       } catch (e) {
-        await sendMessage(chatId, `Could not parse student ${i+1}.`);
+        await sendMessage(chatId, `⚠️ Couldn't parse student ${i+1}`);
         continue;
+      }
+
+      // Generate subject comments
+      const subjectCommentsResp = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        temperature: 0.7,
+        messages: [{ 
+          role: "user", 
+          content: `You're a 25-year-old British teacher. Write SHORT 3-5 word comments for each subject.
+
+Student: ${data.student_name}
+Notes: "${data.teacher_notes}"
+Scores: ${JSON.stringify(data.scores)}
+
+Return ONLY JSON:
+{"English": "Strong creative writing", "Maths": "Needs more practice"}`
+        }]
+      });
+
+      let subjectComments = {};
+      try {
+        const json = subjectCommentsResp.choices[0].message.content.replace(/```json|```/g, "").trim();
+        subjectComments = JSON.parse(json);
+      } catch (e) {
+        Object.keys(data.scores).forEach(subject => {
+          if (data.scores[subject]) {
+            subjectComments[subject] = data.scores[subject] >= 7 ? "Good progress" : "Working hard";
+          }
+        });
       }
 
       // Generate full report
       const reportResp = await openai.chat.completions.create({
         model: "gpt-4o-mini",
-        temperature: 0.7,
-        messages: [{ role: "user", content: `Write a warm, professional 80–100 word British school report. From young male teacher, not stuffy for ${data.student_name}.
-Scores:\n${Object.entries(data.scores).filter(([_,v])=>v!==null).map(([s,v])=>`- ${s}: ${v}/10`).join("\n") || "No scores"}
-Notes: "${data.teacher_notes || ""}"`}]
+        temperature: 0.8,
+        messages: [{ 
+          role: "user", 
+          content: `You're a 25-year-old British teacher. Cool but professional. Write 120-150 words for ${data.student_name}. Use correct pronouns based on name.
+
+Scores: ${Object.entries(data.scores).filter(([_,v])=>v).map(([s,v])=>`${s}: ${v}/10`).join(", ")}
+Notes: "${data.teacher_notes}"
+
+Natural language ("stepped up", "smashing it"). Be honest, warm, specific. No bullets.`
+        }]
       });
       const reportText = reportResp.choices[0].message.content.trim();
 
-      // PROFESSIONAL DORSET HOUSE PDF
-      const pdfDoc = await PDFDocument.create();
-      const page = pdfDoc.addPage([595, 842]);
-      const { width, height } = page.getSize();
-      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-      const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+      // Prepare data for template
+      const subjects = Object.entries(data.scores)
+        .filter(([_, score]) => score !== null)
+        .map(([name, score]) => ({
+          name: name,
+          score: score.toString(),
+          comments: subjectComments[name] || "Progressing well"
+        }));
 
-      // LOGO top-right (supports logo.jpg or logo.png)
-      if (fs.existsSync("logo.jpg") || fs.existsSync("logo.png")) {
-        const logoPath = fs.existsSync("logo.jpg") ? "logo.jpg" : "logo.png";
-        const logoBytes = fs.readFileSync(logoPath);
-        const logoImage = logoPath.endsWith('.jpg')
-          ? await pdfDoc.embedJpg(logoBytes)
-          : await pdfDoc.embedPng(logoBytes);
-        const logoDims = logoImage.scale(0.4);
-        page.drawImage(logoImage, {
-          x: width - 180,
-          y: height - 140,
-          width: logoDims.width,
-          height: logoDims.height,
-        });
-      }
-
-      // Address block under logo
-      let y = height - 100;
-      page.drawText("Church Ln,", { x: width - 200, y: y -= 20, size: 11, font });
-      page.drawText("Bury,", { x: width - 200, y: y -= 20, size: 11, font });
-      page.drawText("Pulborough,", { x: width - 200, y: y -= 20, size: 11, font });
-      page.drawText("RH20 1PB", { x: width - 200, y: y -= 25, size: 11, font, color: rgb(0, 0.3, 0.6) });
-
-      // Dear Parent section
-      page.drawText("Dear Parent,", { x: 70, y: height - 180, size: 12, font: bold });
-      page.drawText("Please find below the latest report for your child.", { x: 70, y: height - 220, size: 11, font });
-      page.drawText("We are very proud of their progress this term.", { x: 70, y: height - 245, size: 11, font });
-
-      // Professional table
-      const left = 70;
-      const col1 = 70;
-      const col2 = 280;
-      const col3 = 380;
-      const tableTop = height - 320;
-
-      page.drawRectangle({ x: left, y: tableTop + 5, width: 455, height: 30, color: rgb(0.05, 0.25, 0.5) });
-      page.drawText("Subject",   { x: col1 + 10, y: tableTop + 12, size: 12, font: bold, color: rgb(1,1,1) });
-      page.drawText("score",     { x: col2 + 15, y: tableTop + 12, size: 12, font: bold, color: rgb(1,1,1) });
-      page.drawText("Comments",  { x: col3 + 10, y: tableTop + 12, size: 12, font: bold, color: rgb(1,1,1) });
-
-      page.drawLine({ start: {x: left, y: tableTop + 35}, end: {x: left + 455, y: tableTop + 35}, thickness: 1.5 });
-      page.drawLine({ start: {x: left, y: tableTop}, end: {x: left + 455, y: tableTop}, thickness: 1.5 });
-
-      [col2, col3].forEach(col => {
-        page.drawLine({ start: {x: col, y: tableTop + 35}, end: {x: col, y: tableTop - 200}, thickness: 0.5, color: rgb(0.7,0.7,0.7) });
+      // Load template and fill it
+      const template = fs.readFileSync('./REPORT_TEMPLATE.docx');
+      
+      const filled = await createReport({
+        template: template,
+        data: {
+          STUDENT_NAME: data.student_name,
+          SUBJECTS: subjects,
+          REPORT_TEXT: reportText
+        }
       });
 
-      y = tableTop - 30;
-      for (const [subject, level] of Object.entries(data.scores)) {
-        if (level === null) continue;
-        page.drawText(subject, { x: col1 + 10, y: y -= 35, size: 11, font });
-        page.drawText(level.toString(), { x: col2 + 20, y: y + 35, size: 11, font });
-        page.drawLine({ start: {x: left, y: y + 15}, end: {x: left + 455, y: y + 15}, thickness: 0.5, color: rgb(0.85,0.85,0.85) });
-      }
-
-      // Longer comments
-      y -= 60;
-      page.drawText("Longer comments", { x: 70, y: y -= 10, size: 13, font: bold });
-      const lines = reportText.match(/.{1,92}(\s|$)/g) || [reportText];
-      lines.forEach(line => {
-        page.drawText(line.trim(), { x: 70, y: y -= 22, size: 11, font });
-      });
-
-      // SEND PDF
-      const pdfBytes = await pdfDoc.save();
+      // Save and send
       const safeName = data.student_name.replace(/[^a-zA-Z0-9]/g, "_");
-      const filename = `${safeName}_report.pdf`;
+      const filename = `${safeName}_Report.docx`;
       const tmpPath = `/tmp/${filename}`;
-      fs.writeFileSync(tmpPath, pdfBytes);
+      fs.writeFileSync(tmpPath, filled);
 
       const form = new FormData();
       form.append('chat_id', chatId);
       form.append('document', fs.createReadStream(tmpPath), { filename });
-      form.append('caption', `Report for ${data.student_name}`);
+      form.append('caption', `📄 ${data.student_name}'s Report`);
 
-      await axios.post(`${TELEGRAM_API}/sendDocument`, form, { headers: form.getHeaders() });
+      await axios.post(`${TELEGRAM_API}/sendDocument`, form, { 
+        headers: form.getHeaders() 
+      });
       fs.unlinkSync(tmpPath);
+
+      console.log(`✅ ${data.student_name}`);
     }
 
-    await sendMessage(chatId, "All reports sent as beautiful PDFs!");
+    await sendMessage(chatId, "✨ All reports sent!");
 
   } catch (err) {
-    console.error(err);
+    console.error("Error:", err);
     if (req.body.message?.chat?.id) {
-      await sendMessage(req.body.message.chat.id, `Error: ${err.message}`);
+      await sendMessage(req.body.message.chat.id, `❌ Error: ${err.message}`);
     }
   }
 
