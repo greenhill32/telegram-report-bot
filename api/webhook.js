@@ -406,8 +406,8 @@ TEACHER NOTES (overall):
       }
 
       // Longer Comments
-      y -= 50;
-      page.drawText("Longer comments", { x: 70, y, size: 13, font: bold });
+      y -= 80;
+      page.drawText("Teachers comments", { x: 70, y, size: 13, font: bold });
 
       const lines = reportText.match(/.{1,92}(\s|$)/g) || [reportText || ""];
 
